@@ -122,7 +122,7 @@ export class SqliteRoomUnitOfWork implements RoomUnitOfWork {
     if (this.loaded) return;
     const roomId = this.roomId.conversationId;
     const eventRows = this.db.prepare(`
-      SELECT seq, message_id, transport_message_id, author_kind, author_id, kind, body, addressed_to, origin, at
+      SELECT seq, message_id, transport_message_id, author_kind, author_id, kind, body, addressed_to, origin, wake_depth, at
       FROM room_events WHERE room_id = ? ORDER BY seq ASC
     `).all(roomId) as unknown as EventRow[];
     this.events = eventRows.map(row => toEvent(this.roomId, row));
@@ -144,8 +144,8 @@ export class SqliteRoomUnitOfWork implements RoomUnitOfWork {
       this.db.prepare('DELETE FROM room_events WHERE room_id = ?').run(roomId);
       const insertEvent = this.db.prepare(`
         INSERT INTO room_events (
-          room_id, seq, message_id, transport_message_id, author_kind, author_id, kind, body, addressed_to, origin, at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          room_id, seq, message_id, transport_message_id, author_kind, author_id, kind, body, addressed_to, origin, wake_depth, at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const event of this.events) {
         insertEvent.run(
@@ -159,6 +159,7 @@ export class SqliteRoomUnitOfWork implements RoomUnitOfWork {
           event.body,
           JSON.stringify(event.addressedTo),
           event.origin,
+          event.wakeDepth,
           event.at,
         );
       }
@@ -253,6 +254,7 @@ interface EventRow {
   body: string;
   addressed_to: string;
   origin: RoomEvent['origin'];
+  wake_depth: number;
   at: string;
 }
 
@@ -275,9 +277,7 @@ function toEvent(roomId: RoomId, row: EventRow): RoomEvent {
     body: row.body,
     origin: row.origin,
     addressedTo: JSON.parse(row.addressed_to) as string[],
-    // The wake_depth column arrives with migration 0004 (RFC 0015 S3); until
-    // then every restored event stands at depth 0.
-    wakeDepth: 0,
+    wakeDepth: Number(row.wake_depth),
     at: row.at,
   };
 }

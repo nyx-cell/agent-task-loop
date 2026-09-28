@@ -56,11 +56,13 @@ export const DEFAULT_AGENT_SEEDS: readonly AgentSeed[] = [
 ];
 
 /** What an id that only exists in an old library gets until it is edited. */
+export const INHERITED_AGENT_ROLE = '成员';
+
 export function inheritedAgentSeed(id: string): AgentSeed {
   return {
     id,
     label: id,
-    role: '成员',
+    role: INHERITED_AGENT_ROLE,
     command: `${id} -p --no-session-persistence --output-format text`,
   };
 }

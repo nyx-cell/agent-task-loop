@@ -41,3 +41,21 @@ export function createVersionTwoLibrary(
   db.close();
   return file;
 }
+
+/**
+ * A library at version 3: prompts are columns, and nothing RFC 0015 added yet.
+ * This is the shape every library this project shipped before the control
+ * plane — the state the migration tests stand in for the real
+ * `rooms.sqlite` on a machine that has one.
+ */
+export function createVersionThreeLibrary(
+  root: string,
+  fill: (db: DatabaseSync) => void = () => {},
+): string {
+  const file = join(root, 'rooms.sqlite');
+  const db = new DatabaseSync(file);
+  runMigrations(db, { migrations: MIGRATIONS.filter(migration => migration.version <= 3) });
+  fill(db);
+  db.close();
+  return file;
+}

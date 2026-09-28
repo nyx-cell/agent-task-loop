@@ -26,6 +26,9 @@ export interface Migration {
 const ROOMS_SQL = readFileSync(new URL('./0001_rooms.sql', import.meta.url), 'utf8');
 const AGENTS_SQL = readFileSync(new URL('./0002_agents.sql', import.meta.url), 'utf8');
 const SYSTEM_PROMPT_SQL = readFileSync(new URL('./0003_agent_system_prompt.sql', import.meta.url), 'utf8');
+const WAKE_DEPTH_SQL = readFileSync(new URL('./0004_wake_depth.sql', import.meta.url), 'utf8');
+const ROOM_SETTINGS_SQL = readFileSync(new URL('./0005_room_settings.sql', import.meta.url), 'utf8');
+const CONTROL_PLANE_SQL = readFileSync(new URL('./0006_control_plane.sql', import.meta.url), 'utf8');
 
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -48,6 +51,21 @@ export const MIGRATIONS: readonly Migration[] = [
       db.exec(SYSTEM_PROMPT_SQL);
       adoptSystemPrompts(db);
     },
+  },
+  {
+    version: 4,
+    name: 'wake_depth',
+    up: db => db.exec(WAKE_DEPTH_SQL),
+  },
+  {
+    version: 5,
+    name: 'room_settings',
+    up: db => db.exec(ROOM_SETTINGS_SQL),
+  },
+  {
+    version: 6,
+    name: 'control_plane',
+    up: db => db.exec(CONTROL_PLANE_SQL),
   },
 ];
 
