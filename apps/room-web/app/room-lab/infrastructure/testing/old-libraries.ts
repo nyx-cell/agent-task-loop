@@ -59,3 +59,20 @@ export function createVersionThreeLibrary(
   db.close();
   return file;
 }
+
+/**
+ * A library at version 6: the control plane is there, the workspace snapshot
+ * still is, and agent sessions still carry the held watermark. The state the
+ * 0007 fixture test stands in for a machine that ran the last release.
+ */
+export function createVersionSixLibrary(
+  root: string,
+  fill: (db: DatabaseSync) => void = () => {},
+): string {
+  const file = join(root, 'rooms.sqlite');
+  const db = new DatabaseSync(file);
+  runMigrations(db, { migrations: MIGRATIONS.filter(migration => migration.version <= 6) });
+  fill(db);
+  db.close();
+  return file;
+}

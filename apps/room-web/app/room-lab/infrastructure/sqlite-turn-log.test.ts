@@ -39,14 +39,20 @@ describe('SqliteTurnLog', () => {
       heldCount: 1,
     }));
 
-    expect(log.listByRoom(ROOM)).toEqual([turn({
+    // The read model drops the room and the read watermark: the room is the
+    // query's own key, and the cursor lives in agent_sessions.
+    expect(log.listByRoom(ROOM)).toEqual([{
       id: 'turn:1',
+      agentId: 'codex',
+      roundSeq: 1,
+      triggerSeq: 1,
+      startedAt: '2026-09-28T10:00:00.000Z',
       endedAt: '2026-09-28T10:04:00.000Z',
       outcome: 'posted',
       postedSeq: 5,
       stopReason: 'end_turn',
       heldCount: 1,
-    })]);
+    }]);
   });
 
   it('stores a turn that is still running or ended silently with the optional columns empty', () => {
@@ -58,7 +64,14 @@ describe('SqliteTurnLog', () => {
 
     // The row is there with its defaults; the record read back carries none of
     // the optional fields.
-    expect(log.listByRoom(ROOM)).toEqual([turn({ id: 'turn:open' })]);
+    expect(log.listByRoom(ROOM)).toEqual([{
+      id: 'turn:open',
+      agentId: 'codex',
+      roundSeq: 1,
+      triggerSeq: 1,
+      startedAt: '2026-09-28T10:00:00.000Z',
+      heldCount: 0,
+    }]);
     expect(store.db.prepare('SELECT ended_at, outcome, posted_seq, held_count FROM turns WHERE id = ?')
       .get('turn:open'))
       .toEqual({ ended_at: null, outcome: null, posted_seq: null, held_count: 0 });

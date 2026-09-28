@@ -114,11 +114,6 @@ describe('Room composer', () => {
     expect(editorEl().textContent).toContain('保留草稿');
   });
 
-  it('says whom a message sent now would wait behind', () => {
-    render(<Harness onSubmit={vi.fn()} behind="dsh" />);
-    expect(screen.getByText(/排在/).textContent).toContain('dsh');
-  });
-
   it('counts characters against the 2000 limit only once there are any', () => {
     const { rerender } = render(<RoomComposer value="" sending={false} agents={CODEX}
       onValueChange={vi.fn()} onSubmit={vi.fn()} />);

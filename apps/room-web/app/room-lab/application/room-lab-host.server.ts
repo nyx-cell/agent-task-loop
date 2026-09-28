@@ -1,26 +1,27 @@
-import type { RoomLabWorkspaceSnapshot } from './room-lab-service.server';
-import { RoomLabService } from './room-lab-service.server';
-import type { AgentRunner } from './ports';
-import { withSystemPrompt } from './system-prompt';
+import { randomUUID } from 'node:crypto';
+import {
+  AgentRuntime,
+  LeaseManager,
+  nodeClock,
+  nodeIdentity,
+  nodeLiveness,
+  runtimeKey,
+  type Harness,
+} from '@rivus/agent-orchestration';
+import { AcpConnector, ToolServer } from '@rivus/agent-orchestration/acp';
+import { RoomService, RoomInputError } from './room-service.server';
+import type { TurnLog } from './ports';
 import {
   listRoomAgentInventory,
   runnableInventory,
 } from './room-agent-inventory.server';
-import { createLocalAgentRunner } from '../infrastructure/local-agent-runner.server';
-import { LocalTaskDelivery } from '../infrastructure/local-task-delivery.server';
-import { LocalTextPresenter } from '../infrastructure/local-text-presenter.server';
-import {
-  createRoomRecordInput,
-  nowIso,
-} from '../infrastructure/room-home.server';
+import { createRoomRecordInput, defaultWorkRoot, nowIso } from '../infrastructure/room-home.server';
 import { SqliteRoomStore } from '../infrastructure/sqlite-room-store.server';
-import { RoomCatalog, RoomCatalogInvariantError } from '../domain/room-catalog';
-import { RoomComposition } from '../domain/room-composition';
-import type {
-  AgentDefinition,
-  AgentRegistry,
-  RoomLabAgentId,
-} from '../domain/agent-registry';
+import { SqliteAgentRegistry } from '../infrastructure/sqlite-agent-registry.server';
+import { SqliteLeaseStore } from '../infrastructure/sqlite-lease-store.server';
+import { SqliteTurnLog } from '../infrastructure/sqlite-turn-log.server';
+import { RoomCatalog, RoomCatalogInvariantError, type RoomWakeMode } from '../domain/room-catalog';
+import type { AgentDefinition, AgentRegistry, RoomLabAgentId } from '../domain/agent-registry';
 import type {
   AgentDeskView,
   RoomAgentInventoryItem,
@@ -30,23 +31,65 @@ import type {
   RoomView,
 } from '../read-model';
 
+export interface RoomLabHostBindings {
+  listAgents?: (agents: readonly AgentDefinition[]) => RoomAgentInventoryItem[];
+}
+
+/**
+ * The endpoint's assembly (RFC 0015): the record comes from `@rivus/agent-room`
+ * through the sqlite stream store, the control plane — registry, lease,
+ * runtime, tool server — from `@rivus/agent-orchestration`, and everything
+ * with a product name (seating, settings, the Room tools, the turn log) lives
+ * here. One runtime and one lease manager serve every room; the runtime's
+ * single activate handler routes each key back to its own RoomService.
+ */
 export class RoomLabHost {
-  private readonly workspaces = new Map<string, RoomLabService>();
+  private readonly store: SqliteRoomStore;
+  private readonly services = new Map<string, RoomService>();
   private catalog: RoomCatalog;
   private inventoryCache?: RoomAgentInventoryItem[];
 
-  /** The one registry: every service, route and view reads members from here. */
+  /** The one roster the desk, the routes and the views read members from. */
   readonly agents: AgentRegistry;
 
+  private readonly controlRegistry: SqliteAgentRegistry;
+  private readonly lease: LeaseManager;
+  private readonly runtime: AgentRuntime;
+  private readonly toolServer: ToolServer;
+  private readonly turnLog: TurnLog;
+
   constructor(
-    private readonly store: SqliteRoomStore = SqliteRoomStore.open(),
-    private readonly bindings: {
-      agentRunner?: AgentRunner;
-      listAgents?: (agents: readonly AgentDefinition[]) => RoomAgentInventoryItem[];
-    } = {},
+    store: SqliteRoomStore = SqliteRoomStore.open(),
+    private readonly bindings: RoomLabHostBindings = {},
   ) {
+    this.store = store;
     this.agents = store.agents;
     this.catalog = store.loadCatalog();
+    this.controlRegistry = new SqliteAgentRegistry(store.db);
+    this.lease = new LeaseManager({
+      store: new SqliteLeaseStore(store.db),
+      clock: nodeClock,
+      identity: nodeIdentity(),
+      holderId: randomUUID(),
+      liveness: nodeLiveness,
+    });
+    this.runtime = new AgentRuntime({
+      connector: new AcpConnector(),
+      registry: this.controlRegistry,
+      lease: this.lease,
+    });
+    this.toolServer = new ToolServer();
+    this.turnLog = new SqliteTurnLog(store.db);
+    this.runtime.onActivate(key => this.activateKey(key));
+  }
+
+  /** The runtime's activate handler: one key, one room's member. */
+  private activateKey(key: string): Promise<Harness> {
+    const marker = ':member:';
+    const at = key.lastIndexOf(marker);
+    const roomId = key.slice('room:'.length, at);
+    const agentId = key.slice(at + marker.length);
+    return this.open(roomId).activate(agentId);
   }
 
   /** Re-reads the `agents` table; the next probe re-runs against the new rows. */
@@ -109,6 +152,9 @@ export class RoomLabHost {
     title: string;
     goal?: string;
     memberIds?: readonly RoomLabAgentId[];
+    wake?: RoomWakeMode;
+    serial?: boolean;
+    cwd?: string;
   }): Promise<RoomLabState> {
     const record = this.catalog.create(createRoomRecordInput(input));
     this.store.saveRoom(record);
@@ -124,68 +170,78 @@ export class RoomLabHost {
     return this.decorate(await service.snapshot(), roomId);
   }
 
-  async act(
-    roomId: string,
-    input: Exclude<RoomLabAction, { action: 'create' }>,
-    signal?: AbortSignal,
-  ): Promise<RoomLabState> {
+  async act(roomId: string, input: Exclude<RoomLabAction, { action: 'create' }>): Promise<RoomLabState> {
     const service = this.open(roomId);
-    let state: RoomView;
     switch (input.action) {
       case 'message':
-        state = await service.sendMessage(input.body, undefined, input.clientMessageId);
-        break;
-      case 'compose':
-        state = await service.compose(input.agentIds);
-        break;
-      case 'count-off':
-        state = await service.runCountOff(signal);
-        break;
-      case 'retry':
-        state = await service.retryHeld(input.agentId, signal);
-        break;
-      case 'task':
-        state = await service.runTask(input.title);
-        break;
+        return this.decorate(await service.sendMessage(input.body, input.clientMessageId), roomId);
+      case 'compose': {
+        this.setMembers(roomId, input.agentIds);
+        return this.decorate(await service.snapshot(), roomId);
+      }
+      case 'settings': {
+        this.setSettings(roomId, input);
+        return this.decorate(await service.snapshot(), roomId);
+      }
       case 'reset':
-        state = await service.reset();
-        break;
+        return this.decorate(await service.reset(), roomId);
       default:
         throw new Error('Unknown Room action');
     }
-    return this.decorate(state, roomId);
   }
 
-  open(roomId: string): RoomLabService {
-    const existing = this.workspaces.get(roomId);
+  private setMembers(roomId: string, agentIds: readonly RoomLabAgentId[]): void {
+    const record = this.catalog.replaceMembers(roomId, agentIds, nowIso());
+    this.store.saveRoom(record);
+  }
+
+  private setSettings(
+    roomId: string,
+    settings: { wake?: RoomWakeMode; serial?: boolean; cwd?: string },
+  ): void {
+    const record = this.catalog.replaceSettings(roomId, settings, nowIso());
+    this.store.saveRoom(record);
+  }
+
+  open(roomId: string): RoomService {
+    const existing = this.services.get(roomId);
     if (existing) return existing;
-    const record = this.catalog.get(roomId);
-    const run = this.bindings.agentRunner
-      ?? createLocalAgentRunner(agentId => this.agents.get(agentId)?.command);
-    const service = new RoomLabService({
-      conversation: this.store.conversation(roomId),
-      agentRunner: (agentId, prompt, signal) =>
-        run(agentId, withSystemPrompt(this.agents.get(agentId)?.systemPrompt, prompt), signal),
-      taskDelivery: new LocalTaskDelivery(undefined, {
-        // TODO(agents-registry)
-        impl: this.agents.get('codex')?.command ?? 'codex',
-        review: this.agents.get('claude')?.command ?? 'claude',
-      }),
-      textPresenter: new LocalTextPresenter(),
-      registry: this.agents,
-      composition: new RoomComposition(record.memberIds, this.agents),
-      onPersist: snapshot => {
-        this.store.saveWorkspace(roomId, snapshot, nowIso());
+    // A room that is not in the catalog has no service; get throws first.
+    this.catalog.get(roomId);
+    const service = new RoomService({
+      roomId: { tenantId: 'local', conversationId: roomId },
+      store: this.store.stream(roomId),
+      registry: this.controlRegistry,
+      runtime: this.runtime,
+      lease: this.lease,
+      turnLog: this.turnLog,
+      members: () => this.catalog.get(roomId).memberIds,
+      agents: () => this.agents.list().map(agent => ({
+        id: agent.id,
+        label: agent.label,
+        role: agent.role,
+        color: agent.color,
+      })),
+      settings: () => {
         const current = this.catalog.get(roomId);
-        if (current.memberIds.join(',') !== snapshot.composition.join(',')) {
-          this.store.saveRoom(this.catalog.replaceMembers(roomId, snapshot.composition, nowIso()));
-        }
+        return { wake: current.wake, serial: current.serial, ...(current.cwd ? { cwd: current.cwd } : {}) };
       },
+      roomTitle: () => this.catalog.get(roomId).title,
+      workRoot: defaultWorkRoot,
+      toolHost: ({ agentId, tools, token }) =>
+        this.toolServer.hostTools({ tools, token, transport: this.toolTransport(agentId) }),
     });
-    const saved = this.store.loadWorkspace(roomId);
-    if (saved) service.restore(saved);
-    this.workspaces.set(roomId, service);
+    this.services.set(roomId, service);
     return service;
+  }
+
+  /**
+   * Which transport carries the Room tools into this member's session. An
+   * agent without an HTTP MCP channel gets the stdio shim; the capability
+   * facts are the agents page's, which lands with S4 on `probe`.
+   */
+  private toolTransport(_agentId: RoomLabAgentId): 'http' | 'stdio' {
+    return 'http';
   }
 
   decorate(state: RoomView, roomId: string): RoomLabState {
@@ -196,6 +252,11 @@ export class RoomLabHost {
       roomId,
       title: record.title,
       ...(record.goal === undefined ? {} : { goal: record.goal }),
+      settings: {
+        wake: record.wake,
+        serial: record.serial,
+        ...(record.cwd === undefined ? {} : { cwd: record.cwd }),
+      },
       catalog: this.catalogView(),
       agents: state.agents.map(agent => {
         const listed = inventory.get(agent.id);
@@ -223,3 +284,4 @@ export class RoomLabHost {
 }
 
 export { RoomCatalogInvariantError, runnableInventory };
+export { RoomInputError };

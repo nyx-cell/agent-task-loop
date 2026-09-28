@@ -47,9 +47,14 @@ export async function action({ request }: ActionFunctionArgs) {
     assertSameOriginForm(request);
     const form = await request.formData();
     const goal = String(form.get('goal') ?? '');
+    const wake = String(form.get('wake') ?? '');
+    const cwd = String(form.get('cwd') ?? '');
     const created = await getRoomLabHost().create({
       title: String(form.get('title') ?? ''),
       ...(goal.trim() ? { goal } : {}),
+      ...(wake === 'addressed' ? { wake: 'addressed' as const } : {}),
+      ...(form.get('serial') === 'on' ? { serial: true } : {}),
+      ...(cwd.trim() ? { cwd } : {}),
     });
     return redirect(`/room/${created.roomId}`);
   } catch (error) {
@@ -80,6 +85,25 @@ export default function RoomHome() {
           <label className="flex flex-col gap-1.5 text-sm">
             <span>{copy.label.goal} <span className="ml-1 text-xs text-muted-foreground">{copy.label.optional}</span></span>
             <Textarea name="goal" maxLength={400} rows={3} placeholder={copy.label.goalPlaceholder} />
+          </label>
+          <label className="flex flex-col gap-1.5 text-sm">
+            {copy.label.roomWake}
+            <select
+              name="wake"
+              className="h-9 rounded-md border border-input bg-transparent px-2 text-sm outline-none focus-visible:border-ring"
+              defaultValue="broadcast"
+            >
+              <option value="broadcast">{copy.label.wakeBroadcast}</option>
+              <option value="addressed">{copy.label.wakeAddressed}</option>
+            </select>
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" name="serial" className="size-4 accent-primary" />
+            {copy.label.roomSerial}
+          </label>
+          <label className="flex flex-col gap-1.5 text-sm">
+            <span>{copy.label.roomCwd} <span className="ml-1 text-xs text-muted-foreground">{copy.label.optional}</span></span>
+            <Input name="cwd" maxLength={400} placeholder={copy.label.roomCwdPlaceholder} />
           </label>
           <p data-error className="m-0 min-h-4 text-xs text-destructive" role={actionData && !actionData.ok ? 'alert' : undefined}>
             {actionData && !actionData.ok ? actionData.error : ''}

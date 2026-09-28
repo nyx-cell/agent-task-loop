@@ -1,9 +1,8 @@
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { RoomId } from '@rivus/agent-room';
-import type { RoomLabWorkspaceSnapshot } from '../application/room-lab-service.server';
-import { RoomCatalog, type RoomRecord } from '../domain/room-catalog';
+import type { AgentSession, RoomEvent, RoomId } from '@rivus/agent-room';
+import { RoomCatalog, type RoomRecord, type RoomWakeMode } from '../domain/room-catalog';
 import {
   AgentRegistry,
   type AgentDefinition,
@@ -11,7 +10,7 @@ import {
 } from '../domain/agent-registry';
 import { defaultRoomHome } from './room-home.server';
 import { runMigrations } from './migrations';
-import { SqliteRoomConversation } from './sqlite-room-conversation.server';
+import { SqliteRoomStreamStore } from './sqlite-room-unit-of-work.server';
 
 const TENANT = 'local';
 
@@ -48,7 +47,7 @@ export class SqliteRoomStore {
 
   loadCatalog(): RoomCatalog {
     const rooms = this.db.prepare(`
-      SELECT id, title, goal, created_at, updated_at, last_opened_at
+      SELECT id, title, goal, created_at, updated_at, last_opened_at, wake, serial, cwd
       FROM rooms
     `).all() as unknown as RoomRow[];
     const members = this.db.prepare(`
@@ -71,6 +70,9 @@ export class SqliteRoomStore {
       // left with none falls back to one agent so it can still be opened. Both
       // are display values: `saveRoom` is the only writer of seating.
       memberIds: membersByRoom.get(row.id) ?? this.agents.ids().slice(0, 1),
+      wake: (row.wake === 'addressed' ? 'addressed' : 'broadcast') as RoomWakeMode,
+      serial: Number(row.serial) === 1,
+      ...(row.cwd ? { cwd: row.cwd } : {}),
       ...(row.goal ? { goal: row.goal } : {}),
     }));
     const lastOpenedId = this.meta('last_opened_id');
@@ -135,14 +137,27 @@ export class SqliteRoomStore {
 
   private upsertRoom(room: RoomRecord): void {
     this.db.prepare(`
-      INSERT INTO rooms (id, title, goal, created_at, updated_at, last_opened_at)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO rooms (id, title, goal, created_at, updated_at, last_opened_at, wake, serial, cwd)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title = excluded.title,
         goal = excluded.goal,
         updated_at = excluded.updated_at,
-        last_opened_at = excluded.last_opened_at
-    `).run(room.id, room.title, room.goal ?? null, room.createdAt, room.updatedAt, room.lastOpenedAt);
+        last_opened_at = excluded.last_opened_at,
+        wake = excluded.wake,
+        serial = excluded.serial,
+        cwd = excluded.cwd
+    `).run(
+      room.id,
+      room.title,
+      room.goal ?? null,
+      room.createdAt,
+      room.updatedAt,
+      room.lastOpenedAt,
+      room.wake,
+      room.serial ? 1 : 0,
+      room.cwd ?? null,
+    );
   }
 
   private inTransaction(work: () => void): void {
@@ -154,22 +169,6 @@ export class SqliteRoomStore {
       this.db.exec('ROLLBACK');
       throw error;
     }
-  }
-
-  loadWorkspace(roomId: string): RoomLabWorkspaceSnapshot | undefined {
-    const row = this.db.prepare('SELECT snapshot FROM room_workspace WHERE room_id = ?').get(roomId) as unknown as
-      | { snapshot: string }
-      | undefined;
-    if (!row) return undefined;
-    return JSON.parse(row.snapshot) as RoomLabWorkspaceSnapshot;
-  }
-
-  saveWorkspace(roomId: string, snapshot: RoomLabWorkspaceSnapshot, now: string): void {
-    this.db.prepare(`
-      INSERT INTO room_workspace (room_id, snapshot, updated_at)
-      VALUES (?, ?, ?)
-      ON CONFLICT(room_id) DO UPDATE SET snapshot = excluded.snapshot, updated_at = excluded.updated_at
-    `).run(roomId, JSON.stringify(snapshot), now);
   }
 
   preview(roomId: string): { lastLine?: string; lastAt?: string } {
@@ -194,9 +193,10 @@ export class SqliteRoomStore {
       .run(prompt.trim(), agentId);
   }
 
-  conversation(roomId: string): SqliteRoomConversation {
+  /** The record and its write points for one room (RFC 0015). */
+  stream(roomId: string): SqliteRoomStreamStore {
     const id: RoomId = { tenantId: TENANT, conversationId: roomId };
-    return new SqliteRoomConversation(this.db, id, this.agents.ids());
+    return new SqliteRoomStreamStore(this.db, id);
   }
 
   private migrate(): void {
@@ -250,16 +250,60 @@ export class SqliteRoomStore {
     };
     this.saveCatalog(new RoomCatalog(catalog.rooms ?? [], catalog.lastOpenedId, this.agents));
     for (const room of catalog.rooms ?? []) {
-      const directory = join(this.root, 'rooms', room.id);
-      const conversation = this.conversation(room.id);
-      conversation.importLegacy(directory);
-      const workspaceFile = join(directory, 'workspace.json');
-      if (existsSync(workspaceFile)) {
-        const snapshot = JSON.parse(readFileSync(workspaceFile, 'utf8')) as RoomLabWorkspaceSnapshot;
-        this.saveWorkspace(room.id, snapshot, room.updatedAt);
-      }
+      this.importLegacyRoom(room.id, join(this.root, 'rooms', room.id));
     }
     this.setMeta('legacy_imported', '1');
+  }
+
+  /**
+   * The one-time import of a pre-sqlite room: its event file and its session
+   * cursors, read raw and written raw. The workspace snapshot a legacy
+   * directory may also carry is not imported — every field it held moved
+   * elsewhere or went with the count-off (RFC 0015 Storage).
+   */
+  private importLegacyRoom(roomId: string, directory: string): void {
+    const events = readJson<RoomEvent[]>(join(directory, 'events.json'), []);
+    const sessions = readJson<AgentSession[]>(join(directory, 'sessions.json'), []);
+    if (events.length === 0 && sessions.length === 0) return;
+    this.inTransaction(() => {
+      this.db.prepare('DELETE FROM room_events WHERE room_id = ?').run(roomId);
+      this.db.prepare('DELETE FROM agent_sessions WHERE room_id = ?').run(roomId);
+      const insertEvent = this.db.prepare(`
+        INSERT INTO room_events (
+          room_id, seq, message_id, transport_message_id, author_kind, author_id, kind, body, addressed_to, origin, wake_depth, at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const event of events) {
+        insertEvent.run(
+          roomId,
+          event.seq,
+          event.messageId,
+          event.transportMessageId ?? null,
+          event.author.kind,
+          event.author.id,
+          event.kind,
+          event.body,
+          JSON.stringify(event.addressedTo ?? []),
+          event.origin ?? 'endpoint',
+          event.wakeDepth ?? 0,
+          event.at,
+        );
+      }
+      const insertSession = this.db.prepare(`
+        INSERT INTO agent_sessions (
+          tenant_id, agent_id, room_id, runtime_generation_id, seen_seq
+        ) VALUES (?, ?, ?, ?, ?)
+      `);
+      for (const session of sessions) {
+        insertSession.run(
+          session.id.tenantId,
+          session.id.agentId,
+          session.id.roomId.conversationId,
+          session.id.runtimeGenerationId,
+          session.seenSeq,
+        );
+      }
+    });
   }
 }
 
@@ -279,6 +323,14 @@ interface RoomRow {
   created_at: string;
   updated_at: string;
   last_opened_at: string;
+  wake: string;
+  serial: number;
+  cwd: string | null;
+}
+
+function readJson<T>(filePath: string, fallback: T): T {
+  if (!existsSync(filePath)) return fallback;
+  return JSON.parse(readFileSync(filePath, 'utf8')) as T;
 }
 
 interface MemberRow {

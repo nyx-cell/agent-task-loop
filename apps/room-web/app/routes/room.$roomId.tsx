@@ -8,7 +8,7 @@ import {
 } from 'react-router';
 import { RoomLab } from '../room-lab/presentation/RoomLab';
 import { getRoomLabHost } from '../room-lab/composition.server';
-import { RoomLabInputError } from '../room-lab/application/room-lab-service.server';
+import { RoomInputError } from '../room-lab/application/room-service.server';
 import { roomActionMessage, roomActionStatus } from '../room-lab/application/room-error';
 import type { RoomLabActionResponse } from '../room-lab/read-model';
 import { parseRoomAction } from '../room-lab/application/parse-room-action';
@@ -61,17 +61,20 @@ export async function action({ request, params }: ActionFunctionArgs) {
     }
     const host = getRoomLabHost();
     const input = parseRoomAction(await request.json().catch(() => {
-      throw new RoomLabInputError('Room action must be valid JSON');
+      throw new RoomInputError('Room action must be valid JSON');
     }), host.agents);
     if (input.action === 'create') {
       const created = await host.create({
         title: input.title,
         ...(input.goal === undefined ? {} : { goal: input.goal }),
         ...(input.agentIds === undefined ? {} : { memberIds: input.agentIds }),
+        ...(input.wake === undefined ? {} : { wake: input.wake }),
+        ...(input.serial === undefined ? {} : { serial: input.serial }),
+        ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
       });
       return data<RoomLabActionResponse>({ ok: true, state: created }, { headers: noStoreHeaders });
     }
-    const state = await host.act(roomId, input, request.signal);
+    const state = await host.act(roomId, input);
     return data<RoomLabActionResponse>({ ok: true, state }, { headers: noStoreHeaders });
   } catch (error) {
     return data<RoomLabActionResponse>(

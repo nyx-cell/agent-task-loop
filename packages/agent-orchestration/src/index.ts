@@ -47,13 +47,6 @@ export type {
   IntervalHandle,
 } from './contracts/ports';
 export type { LockRecord, ProcessIdentity, ProcessLiveness } from './contracts/ports';
-export type {
-  ProcessRunner,
-  ProcessRunnerInput,
-  SeatBinding,
-  SeatBind,
-  SpawnResult,
-} from './contracts/types';
 
 export {
   ORCHESTRATION_CONFLICT_CODE,

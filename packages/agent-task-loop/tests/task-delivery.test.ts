@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ProcessRunner } from '@rivus/agent-orchestration';
+import type { ProcessRunner } from '../src/orchestration/types';
 import {
   MemoryOrchestratedTaskRuntime,
   MemoryTaskDeliveryRepository,

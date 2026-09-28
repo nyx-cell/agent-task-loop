@@ -8,16 +8,16 @@ import {
   type AgentSessionId,
   type AdmitResult,
   type AdmitRoomEvent,
-  type CompleteSilentlyCommand,
-  type CompleteSilentlyResult,
   type RoomEvent,
   type RoomId,
-  type RoomReplyCommand,
-  type RoomReplyResult,
   type RoomSeq,
   type RoomSlice,
   type RoomUnitOfWork,
   type SliceBudget,
+  type PassCommand,
+  type PassResult,
+  type SpeakCommand,
+  type SpeakResult,
 } from '@rivus/agent-room';
 
 export class SqliteRoomUnitOfWork implements RoomUnitOfWork {
@@ -71,16 +71,6 @@ export class SqliteRoomUnitOfWork implements RoomUnitOfWork {
     return snapshot ? cloneSession(snapshot) : undefined;
   }
 
-  advanceSeen(id: AgentSessionId, seq: RoomSeq): AgentSession {
-    return this.changeSession(id, session => session.advanceSeen(seq));
-  }
-
-  lastEvent(): { body: string; at: string } | undefined {
-    this.hydrate();
-    const last = this.events.at(-1);
-    return last ? { body: last.body, at: last.at } : undefined;
-  }
-
   clear(): void {
     const roomId = this.roomId.conversationId;
     this.db.exec('BEGIN IMMEDIATE');
@@ -107,15 +97,6 @@ export class SqliteRoomUnitOfWork implements RoomUnitOfWork {
     this.hydrate();
     const existing = this.sessions.get(sessionKey(id));
     return new AgentSessionAggregate(id, existing ? { seenSeq: existing.seenSeq } : undefined);
-  }
-
-  private changeSession(id: AgentSessionId, change: (session: AgentSessionAggregate) => void): AgentSession {
-    const session = this.loadSession(id);
-    change(session);
-    const snapshot = session.snapshot();
-    this.sessions.set(sessionKey(id), snapshot);
-    this.persist();
-    return snapshot;
   }
 
   private hydrate(): void {
@@ -164,8 +145,6 @@ export class SqliteRoomUnitOfWork implements RoomUnitOfWork {
         );
       }
       this.db.prepare('DELETE FROM agent_sessions WHERE room_id = ?').run(roomId);
-      // `held_up_to_seq` stays in the schema until migration 0007 (RFC 0015 S3);
-      // sessions no longer hold, so it is simply left NULL.
       const insertSession = this.db.prepare(`
         INSERT INTO agent_sessions (
           tenant_id, agent_id, room_id, runtime_generation_id, seen_seq
@@ -211,14 +190,6 @@ export class SqliteRoomStreamStore {
     return this.unitOfWork.inspectSession(id);
   }
 
-  advanceSeen(id: AgentSessionId, seq: RoomSeq): AgentSession {
-    return this.unitOfWork.advanceSeen(id, seq);
-  }
-
-  lastEvent(): { body: string; at: string } | undefined {
-    return this.unitOfWork.lastEvent();
-  }
-
   clear(): void {
     this.unitOfWork.clear();
   }
@@ -235,12 +206,12 @@ export class SqliteRoomStreamStore {
     return this.service.readSlice(roomId, afterSeq, budget);
   }
 
-  replyInSerial(input: RoomReplyCommand): Promise<RoomReplyResult> {
-    return this.service.replyInSerial(input);
+  speak(input: SpeakCommand): Promise<SpeakResult> {
+    return this.service.speak(input);
   }
 
-  completeSilentlyInSerial(input: CompleteSilentlyCommand): Promise<CompleteSilentlyResult> {
-    return this.service.completeSilentlyInSerial(input);
+  pass(input: PassCommand): Promise<PassResult> {
+    return this.service.pass(input);
   }
 }
 

@@ -7,38 +7,41 @@ import { copy } from '../copy';
  * state shows the same one, and copy.test.ts keeps them noun phrases.
  */
 export const agentStatusLabels: Record<RoomLabAgentStatus, string> = {
-  idle: copy.status.idle,
-  running: copy.status.running,
-  completed: copy.status.completed,
+  present: copy.status.present,
+  reading: copy.status.reading,
+  working: copy.status.working,
   posted: copy.status.posted,
-  held: copy.status.held,
-  silent: copy.status.silent,
-  error: copy.status.error,
+  passed: copy.status.passed,
+  timeout: copy.status.timeout,
+  failed: copy.status.failed,
 };
 
-export type StatusTone = 'quiet' | 'run' | 'held' | 'err';
+export type StatusTone = 'quiet' | 'run' | 'err';
 
 export const agentStatusTone: Record<RoomLabAgentStatus, StatusTone> = {
-  idle: 'quiet',
-  running: 'run',
-  completed: 'quiet',
+  present: 'quiet',
+  reading: 'run',
+  working: 'run',
   posted: 'quiet',
-  held: 'held',
-  silent: 'quiet',
-  error: 'err',
+  passed: 'quiet',
+  timeout: 'err',
+  failed: 'err',
 };
+
+/** A member in one of these states is mid-turn and counts seconds. */
+export function memberIsRunning(status: RoomLabAgentStatus): boolean {
+  return status === 'reading' || status === 'working';
+}
 
 export const toneDot: Record<StatusTone, string> = {
   quiet: 'bg-success-foreground',
   run: 'bg-info-foreground',
-  held: 'bg-warning-foreground',
   err: 'bg-destructive',
 };
 
 export const toneText: Record<StatusTone, string> = {
   quiet: 'text-muted-foreground',
   run: 'text-info-foreground',
-  held: 'text-warning-foreground',
   err: 'text-destructive',
 };
 

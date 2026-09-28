@@ -21,8 +21,8 @@ describe('copy grammar', () => {
     }
   });
 
-  it('status words share the four shapes 已X · X中 · 待X · X失败, or are a bare state', () => {
-    const shapes = /^(已.+|.+中|.*待.+|.+失败|在场|等待)$/;
+  it('status words share the shapes 已X · 未X · X中 · 待X · X失败, or are a bare state', () => {
+    const shapes = /^(已.+|未.+|.+中|.*待.+|.+失败|失败|超时|在场|等待)$/;
     for (const [key, text] of strings(copy.status)) expect(text, key).toMatch(shapes);
   });
 
@@ -48,9 +48,8 @@ describe('copy grammar', () => {
     for (const [key, text] of strings(copy.availability)) expect(text, key).not.toMatch(/。$/);
   });
 
-  it('one state, one word: the two finished states read the same', () => {
-    expect(copy.status.posted).toBe(copy.status.completed);
-    expect(copy.status.answered).toBe(copy.status.posted);
+  it('the two ends of one turn do not read the same word', () => {
+    expect(copy.status.posted).not.toBe(copy.status.passed);
   });
 });
 

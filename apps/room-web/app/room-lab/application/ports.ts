@@ -1,85 +1,114 @@
 import type {
-  RoomEvent,
-  RoomSlice,
+  AgentSession,
+  AgentSessionId,
+  RoomStreamStore,
+  SliceBudget,
 } from '@rivus/agent-room';
-import type {
-  TaskDeliveryEvent,
-  TaskDeliveryView,
-} from '@rivus/agent-task-loop/task-delivery';
+import type { AgentRegistry, LeaseRecord, ToolDefinition } from '@rivus/agent-orchestration';
+import type { HostedTools } from '@rivus/agent-orchestration/acp';
 import type { RoomLabAgentId } from '../domain/agent-registry';
+import type { RoomTurnView } from '../read-model';
 
-export interface RoomHumanAdmitResult {
-  event: RoomEvent;
-  duplicate: boolean;
+/** How a turn may carry the record: 50 events, up to 48k characters. */
+export const TURN_BUDGET: SliceBudget = { maxEvents: 50, maxChars: 48_000 };
+
+/** HELDs a single turn survives before the tool closes and the turn passes. */
+export const HELD_LIMIT = 3;
+
+/**
+ * The scheduler half of the control plane, as the dispatcher sees it: wakes
+ * coalesce into one pending flag per key and never block the caller (RFC 0015).
+ */
+export interface RoomMemberRuntime {
+  wake(key: string): void;
 }
 
-export interface RoomConversationPort {
-  readonly conversationId: string;
-  admitHuman(input: {
-    messageId: string;
-    body: string;
-    addressedTo: RoomLabAgentId[];
-  }): Promise<RoomHumanAdmitResult>;
-  shouldWake(event: RoomEvent, agentId: RoomLabAgentId): boolean;
-  prepareTurn(agentId: RoomLabAgentId): Promise<RoomEvent[]>;
-  prepareHeldRetry(
-    agentId: RoomLabAgentId,
-    heldUpToSeq: number,
-  ): Promise<{ events: RoomEvent[]; consumedUpToSeq: number; caughtUp: boolean }>;
-  advanceHeldRetry(agentId: RoomLabAgentId, consumedUpToSeq: number): void;
-  reply(input: {
+/**
+ * A room's two cost knobs the protocol reads directly. The bounds that stay at
+ * their RFC defaults (depth ceiling `2n`, round budget `n(n + 1)`) are left
+ * unset here and derived where they are used.
+ */
+export interface RoomSettings {
+  wake: 'broadcast' | 'addressed';
+  serial: boolean;
+  /** Where members work during a turn; undefined means the room's own directory. */
+  cwd?: string;
+  depthCeiling?: number;
+  roundBudget?: number;
+}
+
+/** The endpoint's turn log: what the UI reads outcomes and rounds from. */
+export interface TurnLog {
+  append(record: {
+    id: string;
+    roomId: string;
     agentId: RoomLabAgentId;
-    body: string;
-    ackHeldUpToSeq?: number;
-  }): Promise<RoomConversationReplyResult>;
-  completeSilently(
-    agentId: RoomLabAgentId,
-    ackHeldUpToSeq: number,
-  ): Promise<RoomConversationSilentResult>;
-  ackHeld(agentId: RoomLabAgentId, heldUpToSeq: number): boolean;
-  inspectAgent(agentId: RoomLabAgentId): { seenSeq: number };
-  snapshot(): Promise<RoomSlice>;
-  project(event: TaskDeliveryEvent): Promise<void>;
-  reset(): void;
+    roundSeq: number;
+    triggerSeq: number;
+    readUpToSeq: number;
+    startedAt: string;
+    endedAt?: string;
+    outcome?: RoomTurnView['outcome'];
+    postedSeq?: number;
+    stopReason?: string;
+    heldCount?: number;
+    error?: string;
+  }): void;
+  /** A room's turns, oldest first. */
+  listByRoom(roomId: string): RoomTurnView[];
 }
 
-export type RoomConversationReplyResult =
-  | { outcome: 'posted'; seq: number; event: RoomEvent }
-  | { outcome: 'held'; heldUpToSeq: number };
+/**
+ * The control plane's ToolServer, narrowed to what a turn needs: the two Room
+ * tool definitions hosted behind a random per-turn token.
+ */
+export type RoomToolHost = (input: {
+  agentId: RoomLabAgentId;
+  tools: ToolDefinition[];
+  token: string;
+}) => Promise<HostedTools>;
 
-export type RoomConversationSilentResult =
-  | { outcome: 'silent' }
-  | { outcome: 'held'; heldUpToSeq: number };
+/** What the dispatcher needs about the room's members: who is seated, in order. */
+export type RoomMembers = () => readonly RoomLabAgentId[];
 
-export interface RoomLabTextPresenterPort {
-  error(error: unknown): string;
-  text(value: string): string;
+/**
+ * The rows this machine knows, as the endpoint's own columns see them: the
+ * desk's roster for the read model and the mention grammar. The control
+ * plane's `AgentRegistry` port (system prompt, binding) travels beside it.
+ */
+export interface AgentDescriptor {
+  id: RoomLabAgentId;
+  label: string;
+  role: string;
+  color: number;
 }
 
-export interface AgentRunResult {
-  text: string;
-  latencyMs: number;
+export type AgentDescriptors = () => readonly AgentDescriptor[];
+
+/** Where the room's settings come from; read fresh so a change applies at once. */
+export type RoomSettingsReader = () => RoomSettings;
+
+/**
+ * The port surface one RoomService is built on. The record and the write
+ * points are `RoomStreamStore` (admit, speak, pass, readSlice); the registry is
+ * the control plane's roster port.
+ */
+export type { RoomStreamStore, AgentRegistry };
+
+/**
+ * The record plus the session side-channels the turn reads it with: the
+ * cursor a member's inbox starts after, and the clear a reset performs. The
+ * control plane's `LeaseManager` satisfies `RoomLeases`; it is narrowed here
+ * so a test can stand in for it.
+ */
+export interface RoomRecordStore extends RoomStreamStore {
+  ensureSession(id: AgentSessionId): AgentSession;
+  inspectSession(id: AgentSessionId): AgentSession | undefined;
+  clear(): void;
 }
 
-export type AgentRunner = (
-  agentId: RoomLabAgentId,
-  prompt: string,
-  signal?: AbortSignal,
-) => Promise<AgentRunResult>;
-
-export interface TaskDeliveryCoordinatorPort {
-  run(
-    input: { taskId: string; title: string; maxRounds: number },
-    observers: {
-      onUpdate(view: TaskDeliveryView): void;
-      onSeatStart(seat: 'impl' | 'review'): void;
-      onSeatSuccess(
-        seat: 'impl' | 'review',
-        output: { text: string; latencyMs: number },
-      ): void;
-      onSeatError(seat: 'impl' | 'review', error: unknown): void;
-      project(event: TaskDeliveryEvent): Promise<void>;
-    },
-  ): Promise<TaskDeliveryView>;
-  reset(): void;
+/** The lease half the dispatcher's writes run under. */
+export interface RoomLeases {
+  fence<T>(key: string, op: () => Promise<T>): Promise<T>;
+  read(key: string): LeaseRecord | undefined;
 }

@@ -1,14 +1,17 @@
-import type { KnownAgentIds } from '../domain/agent-registry';
+import type { KnownAgentIds, } from '../domain/agent-registry';
+import type { RoomWakeMode } from '../domain/room-catalog';
 import type { RoomLabAction } from '../read-model';
-import { RoomLabInputError } from './room-lab-service.server';
+import { RoomInputError } from './room-service.server';
 
 /** `known` is the registry: an id that is not a row is not an agent. */
 export function parseRoomAction(value: unknown, known: KnownAgentIds): RoomLabAction {
   if (!value || typeof value !== 'object' || !('action' in value)) {
-    throw new RoomLabInputError('Room action is invalid');
+    throw new RoomInputError('Room action is invalid');
   }
   const isRoomLabAgentId = (candidate: unknown): candidate is string =>
     typeof candidate === 'string' && known.has(candidate);
+  const isWake = (candidate: unknown): candidate is RoomWakeMode =>
+    candidate === 'broadcast' || candidate === 'addressed';
   const input = value as Record<string, unknown>;
   switch (input.action) {
     case 'message':
@@ -30,16 +33,11 @@ export function parseRoomAction(value: unknown, known: KnownAgentIds): RoomLabAc
         return { action: 'compose', agentIds: input.agentIds };
       }
       break;
-    case 'retry':
-      if (isRoomLabAgentId(input.agentId)) {
-        return { action: 'retry', agentId: input.agentId };
-      }
+    case 'settings': {
+      const settings = settingsOf(input, isWake);
+      if (settings) return { action: 'settings', ...settings };
       break;
-    case 'count-off':
-      return { action: 'count-off' };
-    case 'task':
-      if (typeof input.title === 'string') return { action: 'task', title: input.title };
-      break;
+    }
     case 'create':
       if (typeof input.title === 'string') {
         return {
@@ -49,11 +47,24 @@ export function parseRoomAction(value: unknown, known: KnownAgentIds): RoomLabAc
           ...(Array.isArray(input.agentIds) && input.agentIds.every(isRoomLabAgentId)
             ? { agentIds: input.agentIds }
             : {}),
+          ...settingsOf(input, isWake),
         };
       }
       break;
     case 'reset':
       return { action: 'reset' };
   }
-  throw new RoomLabInputError('Room action payload is invalid');
+  throw new RoomInputError('Room action payload is invalid');
+}
+
+/** The settings fields present on the payload; absent fields stay absent. */
+function settingsOf(
+  input: Record<string, unknown>,
+  isWake: (candidate: unknown) => candidate is RoomWakeMode,
+): { wake?: RoomWakeMode; serial?: boolean; cwd?: string } | undefined {
+  const settings: { wake?: RoomWakeMode; serial?: boolean; cwd?: string } = {};
+  if (isWake(input.wake)) settings.wake = input.wake;
+  if (typeof input.serial === 'boolean') settings.serial = input.serial;
+  if (typeof input.cwd === 'string') settings.cwd = input.cwd;
+  return Object.keys(settings).length > 0 ? settings : undefined;
 }

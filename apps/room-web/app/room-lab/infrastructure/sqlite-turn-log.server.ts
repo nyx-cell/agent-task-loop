@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import type { RoomTurnView } from '../read-model';
 
 /** How a turn ended: it spoke, it stayed silent, it ran out of time, or it failed. */
 export type TurnOutcome = 'posted' | 'passed' | 'timeout' | 'failed';
@@ -55,7 +56,7 @@ export class SqliteTurnLog {
   }
 
   /** A room's turns, oldest first. */
-  listByRoom(roomId: string): TurnRecord[] {
+  listByRoom(roomId: string): RoomTurnView[] {
     const rows = this.db.prepare(`
       SELECT id, room_id, agent_id, round_seq, trigger_seq, read_up_to_seq,
              started_at, ended_at, outcome, posted_seq, stop_reason, held_count, error
@@ -82,14 +83,12 @@ interface TurnRow {
   error: string | null;
 }
 
-function toRecord(row: TurnRow): TurnRecord {
+function toRecord(row: TurnRow): RoomTurnView {
   return {
     id: row.id,
-    roomId: row.room_id,
     agentId: row.agent_id,
     roundSeq: Number(row.round_seq),
     triggerSeq: Number(row.trigger_seq),
-    readUpToSeq: Number(row.read_up_to_seq),
     startedAt: row.started_at,
     ...(row.ended_at === null ? {} : { endedAt: row.ended_at }),
     ...(row.outcome === null ? {} : { outcome: row.outcome as TurnOutcome }),

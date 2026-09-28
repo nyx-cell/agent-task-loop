@@ -6,7 +6,7 @@ import { roomFixture } from './testing/room-fixture';
 
 afterEach(cleanup);
 describe('Crew management', () => {
-  it('keeps composition and count-off order controllable', () => {
+  it('keeps composition and speaking order controllable', () => {
     const onCompose = vi.fn();
     render(<CrewComposer agents={roomFixture().agents} activeAgentIds={['codex', 'claude']}
       disabled={false} onCompose={onCompose} />);

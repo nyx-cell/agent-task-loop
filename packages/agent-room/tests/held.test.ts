@@ -189,61 +189,50 @@ describe('pass', () => {
   });
 });
 
-describe('S1 replyInSerial / completeSilentlyInSerial shims', () => {
-  it('replyInSerial posts from the stored cursor and maps held to the newest unread seq', async () => {
+describe('the write points behind the old shims', () => {
+  it('speak posts from what the turn read and holds the rest behind it', async () => {
     const store = new MemoryRoomStreamStore();
     await admitHuman(store, 'h1', 'please look');
-    store.advanceSeen(botA, 1);
-    const posted = await store.replyInSerial({ session: botA, body: 'alpha' });
+    const posted = await store.speak(speakCommand({ session: botA, body: 'alpha' }));
     expect(posted).toMatchObject({ outcome: 'posted', seq: 2 });
 
-    const held = await store.replyInSerial({ session: botB, body: 'beta' });
-    // The stored cursor is 0, so both unread events come back with the HELD.
-    expect(held).toMatchObject({
-      outcome: 'held',
-      heldUpToSeq: 2,
-    });
+    const held = await store.speak(speakCommand({ session: botB, body: 'beta' }));
+    // botB read the human message but not botA's post; only the post comes back.
+    expect(held).toMatchObject({ outcome: 'held' });
     if (held.outcome !== 'held') return;
-    expect(held.newer.map(event => event.seq)).toEqual([1, 2]);
+    expect(held.newer.map(event => event.seq)).toEqual([2]);
     expect(store.inspectSession(botB)).toEqual({ id: botB, seenSeq: 0 });
 
-    const afterCatchUp = await store.replyInSerial({
-      session: botB,
-      body: 'beta after catch-up',
-      ackHeldUpToSeq: 2,
-    });
+    const afterCatchUp = await store.speak(
+      speakCommand({ session: botB, body: 'beta after catch-up', readUpToSeq: 2 }),
+    );
     expect(afterCatchUp).toMatchObject({ outcome: 'posted', seq: 3 });
     expect(store.inspectSession(botB)?.seenSeq).toBe(3);
   });
 
-  it('completeSilentlyInSerial reports held behind unread events and passes otherwise', async () => {
+  it('pass never holds and moves the cursor exactly where the turn read', async () => {
     const store = new MemoryRoomStreamStore();
     store.ensureSession(botA);
     await admitHuman(store, 'h1', 'first fact');
     store.advanceSeen(botA, 1);
     await admitHuman(store, 'h2', 'newer fact');
 
-    await expect(
-      store.completeSilentlyInSerial({ session: botA, ackHeldUpToSeq: 1 }),
-    ).resolves.toMatchObject({
-      outcome: 'held',
-      heldUpToSeq: 2,
-      newer: [{ seq: 2, body: 'newer fact' }],
-    });
+    await store.pass({ session: botA, readUpToSeq: 1 });
     expect(store.inspectSession(botA)?.seenSeq).toBe(1);
 
-    await expect(
-      store.completeSilentlyInSerial({ session: botA, ackHeldUpToSeq: 2 }),
-    ).resolves.toEqual({ outcome: 'silent' });
+    await store.pass({ session: botA, readUpToSeq: 2 });
     expect(store.inspectSession(botA)?.seenSeq).toBe(2);
   });
 
-  it('replyInSerial keeps the control-plane origin path out of the session table', async () => {
+  it('speak keeps the control-plane origin path out of the session table', async () => {
     const store = new MemoryRoomStreamStore();
     await admitHuman(store, 'h1', 'hello');
-    const result = await store.replyInSerial({
+    const result = await store.speak({
       session: botA,
       body: 'member-joined',
+      addressedTo: [],
+      readUpToSeq: 1,
+      triggerSeq: 1,
       origin: 'control-plane',
     });
 
@@ -256,10 +245,8 @@ describe('S1 replyInSerial / completeSilentlyInSerial shims', () => {
   it('keeps internal post message ids collision-free per member', async () => {
     const store = new MemoryRoomStreamStore();
     await admitHuman(store, 'h1', 'please look');
-    store.advanceSeen(botA, 1);
-    await store.replyInSerial({ session: botA, body: 'alpha' });
-    store.advanceSeen(botB, 2);
-    await store.replyInSerial({ session: botB, body: 'beta' });
+    await store.speak(speakCommand({ session: botA, body: 'alpha' }));
+    await store.speak(speakCommand({ session: botB, body: 'beta', readUpToSeq: 2, triggerSeq: 2 }));
 
     const slice = await store.readSlice(room, 1, { maxEvents: 10 });
     expect(slice.events.map(event => event.messageId)).toEqual([

@@ -29,6 +29,7 @@ const SYSTEM_PROMPT_SQL = readFileSync(new URL('./0003_agent_system_prompt.sql',
 const WAKE_DEPTH_SQL = readFileSync(new URL('./0004_wake_depth.sql', import.meta.url), 'utf8');
 const ROOM_SETTINGS_SQL = readFileSync(new URL('./0005_room_settings.sql', import.meta.url), 'utf8');
 const CONTROL_PLANE_SQL = readFileSync(new URL('./0006_control_plane.sql', import.meta.url), 'utf8');
+const DROP_WORKSPACE_SQL = readFileSync(new URL('./0007_drop_workspace.sql', import.meta.url), 'utf8');
 
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -66,6 +67,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 6,
     name: 'control_plane',
     up: db => db.exec(CONTROL_PLANE_SQL),
+  },
+  {
+    version: 7,
+    name: 'drop_workspace',
+    up: db => db.exec(DROP_WORKSPACE_SQL),
   },
 ];
 

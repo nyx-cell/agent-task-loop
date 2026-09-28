@@ -5,6 +5,9 @@ import {
 } from './room-identity';
 import { RoomComposition } from './room-composition';
 
+/** How an event decides who is woken: everyone, or only those addressed. */
+export type RoomWakeMode = 'broadcast' | 'addressed';
+
 export interface RoomRecord {
   id: string;
   title: string;
@@ -13,6 +16,12 @@ export interface RoomRecord {
   updatedAt: string;
   lastOpenedAt: string;
   memberIds: RoomLabAgentId[];
+  /** The one cost knob that lives in the protocol (RFC 0015). */
+  wake: RoomWakeMode;
+  /** Run the woken set one member at a time, in seat order. */
+  serial: boolean;
+  /** Where members work during a turn; undefined means the room's own directory. */
+  cwd?: string;
 }
 
 export class RoomCatalog {
@@ -24,7 +33,13 @@ export class RoomCatalog {
     lastOpenedId?: string,
     private readonly known?: KnownAgentIds,
   ) {
-    this.rooms = rooms.map(cloneRecord);
+    // A record from before the settings columns (a legacy catalog.json) has no
+    // wake or serial on it; the defaults are the record's, not the caller's.
+    this.rooms = rooms.map(room => cloneRecord({
+      ...room,
+      wake: room.wake ?? 'broadcast',
+      serial: room.serial ?? false,
+    }));
     this.lastOpenedId = lastOpenedId && this.rooms.some(room => room.id === lastOpenedId)
       ? lastOpenedId
       : this.rooms[0]?.id;
@@ -35,6 +50,9 @@ export class RoomCatalog {
     title: string;
     goal?: string;
     memberIds?: readonly RoomLabAgentId[];
+    wake?: RoomWakeMode;
+    serial?: boolean;
+    cwd?: string;
     now: string;
   }): RoomRecord {
     const id = assertRoomIdentity(input.id);
@@ -51,6 +69,9 @@ export class RoomCatalog {
         input.memberIds ?? this.known?.ids() ?? [],
         this.known,
       ).snapshot(),
+      wake: input.wake ?? 'broadcast',
+      serial: input.serial ?? false,
+      ...(optionalCwd(input.cwd) === undefined ? {} : { cwd: optionalCwd(input.cwd) }),
       ...(optionalGoal(input.goal) === undefined ? {} : { goal: optionalGoal(input.goal) }),
     };
     this.rooms.push(record);
@@ -93,6 +114,24 @@ export class RoomCatalog {
     });
   }
 
+  /** Applies the settings fields a room's own surface may change. */
+  replaceSettings(
+    id: string,
+    settings: { wake?: RoomWakeMode; serial?: boolean; cwd?: string },
+    now: string,
+  ): RoomRecord {
+    return this.update(id, room => {
+      if (settings.wake !== undefined) room.wake = settings.wake;
+      if (settings.serial !== undefined) room.serial = settings.serial;
+      if (settings.cwd !== undefined) {
+        const cwd = optionalCwd(settings.cwd);
+        if (cwd === undefined) delete room.cwd;
+        else room.cwd = cwd;
+      }
+      room.updatedAt = now;
+    });
+  }
+
   snapshot(): { rooms: RoomRecord[]; lastOpenedId?: string } {
     return {
       rooms: this.rooms.map(cloneRecord),
@@ -125,6 +164,15 @@ function optionalGoal(value: string | undefined): string | undefined {
   if (!goal) return undefined;
   if (goal.length > 400) throw new RoomCatalogInvariantError('Room goal must be at most 400 characters');
   return goal;
+}
+
+/** An empty settings field clears the room's own value. */
+function optionalCwd(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const cwd = value.trim();
+  if (!cwd) return undefined;
+  if (cwd.length > 400) throw new RoomCatalogInvariantError('Room cwd must be at most 400 characters');
+  return cwd;
 }
 
 function cloneRecord(room: RoomRecord): RoomRecord {

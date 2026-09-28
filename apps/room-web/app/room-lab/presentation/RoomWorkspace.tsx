@@ -1,14 +1,13 @@
 import { useEffect, useState } from 'react';
 import type { RoomLabAction, RoomLabState } from '../read-model';
+import { memberIsRunning } from './agent-status';
 import { RoomSidebar } from './RoomSidebar';
 import { copy } from '../copy';
 import { RoomHeader } from './RoomHeader';
 import { RoomComposer } from './RoomComposer';
 import { RoomContext } from './RoomContext';
 import { RoomTimeline } from './RoomTimeline';
-import { RunStrip } from './RunStrip';
 import { formatElapsed } from './format-time';
-import { behindWhom, deriveRound, roundSentence } from './round';
 import { useElapsed } from './use-elapsed';
 
 export function RoomWorkspace({ state, pending, sending, error, value, onValueChange, onAction }: {
@@ -22,15 +21,16 @@ export function RoomWorkspace({ state, pending, sending, error, value, onValueCh
   // Identity colour for anyone the registry knows, including a member who has
   // since left this room but still speaks in its transcript.
   const colorOf = (agentId: string) => state.agents.find(agent => agent.id === agentId)?.color;
-  const round = deriveRound(state);
-  const elapsedOf = useElapsed(state.runningAgentIds);
+  // Mid-turn members, in seat order: the only members a wait can be about.
+  const runningAgents = activeAgents.filter(agent => memberIsRunning(agent.status));
+  const elapsedOf = useElapsed(runningAgents.map(agent => agent.id));
 
   // Switching rooms closes any open panel; the new room starts at rest.
   useEffect(() => { setContextOpen(false); setEditingCrew(false); }, [state.roomId]);
 
-  // A 30–120 s wait has to be visible from another window too: the tab title
-  // carries who is speaking and for how long while a round is live.
-  const nowId = round?.now?.id;
+  // A turn can run for minutes; that has to be visible from another window
+  // too, so the tab title carries who is running and for how long.
+  const nowId = runningAgents[0]?.id;
   const nowSeconds = nowId ? elapsedOf(nowId) : undefined;
   useEffect(() => {
     const wait = nowId
@@ -67,11 +67,12 @@ export function RoomWorkspace({ state, pending, sending, error, value, onValueCh
           title={state.title}
           goal={state.goal}
           memberCount={activeAgents.length}
-          sentence={roundSentence(round)}
+          settings={state.settings}
           disabled={commandLocked}
           onMembers={() => openMembers(false)}
           onManage={() => openMembers(true)}
           onReset={() => onAction({ action: 'reset' })}
+          onSettings={change => onAction(change)}
         />
         {error && (
           <div className="mx-7 mt-3 rounded-sm bg-destructive-soft px-2.5 py-[5px] text-[13px] leading-snug text-destructive-soft-foreground [overflow-wrap:anywhere]" role="alert">
@@ -82,16 +83,12 @@ export function RoomWorkspace({ state, pending, sending, error, value, onValueCh
           events={state.events}
           head={state.head}
           agents={activeAgents}
-          round={round}
-          elapsedOf={elapsedOf}
           colorOf={colorOf}
         />
-        <RunStrip round={round} elapsedOf={elapsedOf} />
         <RoomComposer
           value={value}
           sending={!!sending}
           agents={activeAgents}
-          behind={behindWhom(round)}
           onValueChange={onValueChange}
           onSubmit={submit}
         />
@@ -99,7 +96,6 @@ export function RoomWorkspace({ state, pending, sending, error, value, onValueCh
       <RoomContext
         state={state}
         agents={activeAgents}
-        round={round}
         elapsedOf={elapsedOf}
         open={contextOpen}
         editing={editingCrew}
@@ -107,8 +103,6 @@ export function RoomWorkspace({ state, pending, sending, error, value, onValueCh
         onEditingChange={setEditingCrew}
         onClose={() => setContextOpen(false)}
         onCompose={agentIds => onAction({ action: 'compose', agentIds })}
-        onRetry={agentId => onAction({ action: 'retry', agentId })}
-        onCountOff={() => onAction({ action: 'count-off' })}
       />
     </div>
   );

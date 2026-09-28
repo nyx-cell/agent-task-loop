@@ -11,7 +11,6 @@ import { History } from '@tiptap/extension-history';
 import { Placeholder } from '@tiptap/extension-placeholder';
 import { CharacterCount } from '@tiptap/extension-character-count';
 import { ROOM_MESSAGE_LIMIT } from '../domain/room-message';
-import type { RoomLabAgentId } from '../read-model';
 import type { MentionAgent } from './mention-completion';
 import { copy } from '../copy';
 import { Button } from '~/components/ui/button';
@@ -30,11 +29,10 @@ import { MENTION_LIST_ID, mentionOptionId, roomMention } from './composer-mentio
  * the time it leaves. The document exists so that a mention can be one object
  * you delete in one keystroke instead of nine characters you can half-delete.
  */
-export function RoomComposer({ value, sending, agents, behind, onValueChange, onSubmit }: {
+export function RoomComposer({ value, sending, agents, onValueChange, onSubmit }: {
   value: string; sending: boolean;
   /** The room's members, in speaking order: who can be mentioned, and in what colour. */
   agents: readonly MentionAgent[];
-  behind?: RoomLabAgentId;
   onValueChange: (value: string) => void; onSubmit: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -187,9 +185,7 @@ export function RoomComposer({ value, sending, agents, behind, onValueChange, on
           <At size={16} />
         </Button>
         <span id="room-composer-hint" className="ml-1 text-xs leading-tight text-muted-foreground">
-          {behind
-            ? copy.say.queueBehind(behind)
-            : copy.say.composerHint}
+          {copy.say.composerHint}
         </span>
         {characters > 0 && (
           <span className={`ml-auto text-xs tabular-nums ${characters > ROOM_MESSAGE_LIMIT ? 'text-destructive' : 'text-muted-foreground'}`}>

@@ -42,8 +42,6 @@ Internal package (`private: true`). Not published yet.
 - `speak({ body, addressedTo, readUpToSeq, triggerSeq })` posts at the
   trigger's depth plus one or returns HELD with the newer events
 - `pass({ readUpToSeq })` moves the cursor without a post
-- `replyInSerial` / `completeSilentlyInSerial` survive as thin wrappers over
-  `speak` / `pass` for one pull request (apps/room-web); deleted in S3
 
 ## Non-mixing
 

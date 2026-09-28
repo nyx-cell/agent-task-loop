@@ -54,7 +54,8 @@ export function RoomLab({ initialState }: { initialState: RoomLabState }) {
 
   const pending = fetcher.state !== 'idle';
   const sending = pending && submittedAction.current?.action === 'message';
-  const live = pending || state.runningAgentIds.length > 0;
+  // Members mid-turn show it in their derived status; the poll follows them.
+  const live = pending || state.agents.some(agent => agent.status === 'reading' || agent.status === 'working');
   useEffect(() => {
     if (!live) return;
     const poll = window.setInterval(() => {

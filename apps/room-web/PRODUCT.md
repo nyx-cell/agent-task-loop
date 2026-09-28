@@ -53,7 +53,7 @@ Rivus room-web 是本地多 agent 的聊天室。一句话发给房间，在场�
 
 ## Evidence on Hand
 
-- 真实 read model：`app/room-lab/read-model.ts`；真实服务行为：`app/room-lab/application/room-lab-service.server.ts`。
+- 真实 read model：`app/room-lab/read-model.ts`；真实服务行为：`app/room-lab/application/room-service.server.ts`。
 - 使用者审过的文案与判定标准：仓库根下 `.tmp-bin/rivus-copy.txt`（gitignore，未入库）。
 - 使用者迭代到第 7 版并认可的界面原型：scratchpad `rivus-prototype.html`（房间视图部分）。
 - 没有真实用户访谈、没有截图对比数据、没有品牌手册。不要编造。

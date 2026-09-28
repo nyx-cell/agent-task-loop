@@ -1,16 +1,25 @@
-import type { CountOffSnapshot } from './domain/count-off-run';
 import type { RoomLabAgentId } from './domain/agent-registry';
 
 export type { RoomLabAgentId } from './domain/agent-registry';
 
-export type RoomLabAgentStatus =
-  | 'idle'
-  | 'running'
-  | 'completed'
-  | 'posted'
-  | 'held'
-  | 'silent'
-  | 'error';
+/** How a turn ended, as the turn log records it. */
+export type RoomTurnOutcome = 'posted' | 'passed' | 'timeout' | 'failed';
+
+/** One row of the `turns` log, as the UI reads it. */
+export interface RoomTurnView {
+  id: string;
+  agentId: RoomLabAgentId;
+  /** The human event that opened the round this turn belongs to. */
+  roundSeq: number;
+  /** The event that woke this member. */
+  triggerSeq: number;
+  startedAt: string;
+  endedAt?: string;
+  outcome?: RoomTurnOutcome;
+  postedSeq?: number;
+  heldCount: number;
+  error?: string;
+}
 
 export interface RoomLabEventView {
   seq: number;
@@ -19,7 +28,7 @@ export interface RoomLabEventView {
     kind: 'human' | 'agent' | 'control-plane';
     id: string;
   };
-  kind: 'human' | 'posted' | 'companion' | 'control-plane';
+  kind: 'human' | 'posted' | 'control-plane';
   body: string;
   addressedTo: string[];
   at: string;
@@ -40,7 +49,41 @@ export interface RoomAgentInventoryItem {
   command?: string;
 }
 
-/** A seat as the room itself knows it: who is in it and what they did. */
+/**
+ * A member's state as the person scans it (RFC 0015). It is derived from the
+ * lease, the ACP update stream and the last row in `turns` — never stored as
+ * truth, and HELD is not shown: it happens inside a turn and resolves there.
+ */
+export type RoomLabAgentStatus =
+  | 'present'
+  | 'reading'
+  | 'working'
+  | 'posted'
+  | 'passed'
+  | 'timeout'
+  | 'failed';
+
+export function deriveMemberStatus(input: {
+  leaseHeld: boolean;
+  toolCallSeen: boolean;
+  lastOutcome?: RoomTurnOutcome;
+}): RoomLabAgentStatus {
+  if (input.leaseHeld) return input.toolCallSeen ? 'working' : 'reading';
+  switch (input.lastOutcome) {
+    case 'posted':
+      return 'posted';
+    case 'passed':
+      return 'passed';
+    case 'timeout':
+      return 'timeout';
+    case 'failed':
+      return 'failed';
+    default:
+      return 'present';
+  }
+}
+
+/** A seat as the room itself knows it: who is in it and what they did last. */
 export interface RoomSeatView {
   id: RoomLabAgentId;
   label: string;
@@ -49,10 +92,7 @@ export interface RoomSeatView {
   active: boolean;
   status: RoomLabAgentStatus;
   seenSeq: number;
-  heldUpToSeq?: number;
-  lastDraft?: string;
-  latencyMs?: number;
-  retryAttempt?: number;
+  /** The failure text of the member's last failed or timed-out turn. */
   error?: string;
 }
 
@@ -60,27 +100,6 @@ export interface RoomSeatView {
 export interface RoomLabAgentView extends RoomSeatView {
   availability: RoomAgentAvailability;
   command?: string;
-}
-
-export type RoomLabTaskStatus =
-  | 'executing'
-  | 'reviewing'
-  | 'reworking'
-  | 'passed'
-  | 'changes-requested'
-  | 'failed'
-  | 'interrupted';
-
-export interface RoomLabTaskView {
-  taskId: string;
-  title: string;
-  status: RoomLabTaskStatus;
-  round: number;
-  maxRounds: number;
-  allowedSeat: 'impl' | 'review';
-  occupied: boolean;
-  verdict?: 'PASS' | 'CHANGES_REQUESTED';
-  findings?: string;
 }
 
 export interface RoomCatalogItemView {
@@ -108,28 +127,33 @@ export interface AgentDeskView {
 }
 
 /**
- * What one room can state about itself. It knows its transcript and its seats;
- * it does not know the room's title, the other rooms, or which CLIs this
- * machine has — those are the host's, added in `RoomLabHost.decorate`.
+ * What one room can state about itself. It knows its transcript, its seats and
+ * its turn log; it does not know the room's title, the other rooms, or which
+ * CLIs this machine has — those are the host's, added in `RoomLabHost.decorate`.
  */
 export interface RoomView {
   roomId: string;
   epoch: string;
   head: number;
   revision: number;
-  busy: boolean;
-  runningAgentIds: RoomLabAgentId[];
   activeAgentIds: RoomLabAgentId[];
   events: RoomLabEventView[];
   agents: RoomSeatView[];
-  countOff?: CountOffSnapshot;
-  task?: RoomLabTaskView;
+  turns: RoomTurnView[];
+}
+
+/** A room's settings as the settings form edits them. */
+export interface RoomSettingsView {
+  wake: 'broadcast' | 'addressed';
+  serial: boolean;
+  cwd?: string;
 }
 
 /** The room as a page can render it: the host's facts folded in. */
 export interface RoomLabState extends RoomView {
   title: string;
   goal?: string;
+  settings: RoomSettingsView;
   agents: RoomLabAgentView[];
   catalog: RoomCatalogItemView[];
 }
@@ -137,10 +161,21 @@ export interface RoomLabState extends RoomView {
 export type RoomLabAction =
   | { action: 'message'; body: string; clientMessageId?: string }
   | { action: 'compose'; agentIds: RoomLabAgentId[] }
-  | { action: 'count-off' }
-  | { action: 'retry'; agentId: RoomLabAgentId }
-  | { action: 'task'; title: string }
-  | { action: 'create'; title: string; goal?: string; agentIds?: RoomLabAgentId[] }
+  | {
+      action: 'settings';
+      wake?: 'broadcast' | 'addressed';
+      serial?: boolean;
+      cwd?: string;
+    }
+  | {
+      action: 'create';
+      title: string;
+      goal?: string;
+      agentIds?: RoomLabAgentId[];
+      wake?: 'broadcast' | 'addressed';
+      serial?: boolean;
+      cwd?: string;
+    }
   | { action: 'reset' };
 
 export type RoomLabActionResponse =

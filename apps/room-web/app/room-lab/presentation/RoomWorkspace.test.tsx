@@ -45,65 +45,62 @@ describe('Room workspace', () => {
     openRoomMenu();
     fireEvent.click(screen.getByRole('menuitem', { name: '清空对话' }));
     expect(onAction).not.toHaveBeenCalledWith({ action: 'reset' });
+    // 取消 puts the menu back on its action list, still open.
     fireEvent.click(screen.getByRole('button', { name: '取消' }));
     expect(screen.queryByRole('button', { name: '确认清空' })).toBeNull();
-    openRoomMenu();
     fireEvent.click(screen.getByRole('menuitem', { name: '清空对话' }));
     fireEvent.click(screen.getByRole('button', { name: '确认清空' }));
     expect(onAction).toHaveBeenCalledWith({ action: 'reset' });
   });
 
-  it('runs count-off from the context column and keeps its record there', () => {
+  it('edits wake, serial and cwd from the room menu and sends only what changed', () => {
     const onAction = vi.fn();
-    const state = roomFixture({
-      countOff: { runId: 'COUNT-001', status: 'completed', nextNumber: 6, total: 5,
-        agentIds: roomFixture().activeAgentIds, reports: [] },
-    });
-    render(<RoomWorkspace state={state} pending={false} value=""
+    render(<RoomWorkspace state={roomFixture()} pending={false} value=""
       onValueChange={vi.fn()} onAction={onAction} />);
-    const aside = screen.getByRole('complementary', { name: '成员与连接' });
-    fireEvent.click(within(aside).getByRole('button', { name: '开始报数' }));
-    expect(onAction).toHaveBeenCalledWith({ action: 'count-off' });
-    expect(within(aside).getByText('5 位全部通过')).toBeTruthy();
+    openRoomMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: '房间设置' }));
+    fireEvent.change(screen.getByLabelText('唤醒'), { target: { value: 'addressed' } });
+    fireEvent.click(screen.getByLabelText('逐个运行'));
+    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/tmp/room-work' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    expect(onAction).toHaveBeenCalledWith({
+      action: 'settings', wake: 'addressed', serial: true, cwd: '/tmp/room-work',
+    });
+
+    // Nothing touched: the form closes without dispatching an action the
+    // server would have to refuse as empty.
+    onAction.mockClear();
+    openRoomMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: '房间设置' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    expect(onAction).not.toHaveBeenCalled();
   });
 
-  it('keeps a held draft out of the transcript and retries it from where the member is listed', () => {
-    const state = roomFixture({ events: [{
-      seq: 4, messageId: 'web:4', author: { kind: 'human', id: 'director' }, kind: 'human',
-      body: '大家看看', addressedTo: [], at: '2026-09-17T00:00:00Z',
-    }] });
-    state.agents = state.agents.map(agent => agent.id === 'relay'
-      ? { ...agent, status: 'held', seenSeq: 3, heldUpToSeq: 4, lastDraft: 'PRIVATE_DRAFT' }
-      : { ...agent, status: 'posted', seenSeq: 4 });
-    const onAction = vi.fn();
-    render(<RoomWorkspace state={state} pending={false} value=""
-      onValueChange={vi.fn()} onAction={onAction} />);
-    expect(screen.getByRole('region', { name: '房间对话' }).textContent).not.toContain('PRIVATE_DRAFT');
-    expect(screen.getByRole('region', { name: '房间对话' }).textContent).toContain('草稿被新消息打断');
-    const aside = screen.getByRole('complementary', { name: '成员与连接' });
-    expect(within(aside).getByText('PRIVATE_DRAFT')).toBeTruthy();
-    fireEvent.click(within(aside).getByRole('button', { name: '读取更新并重答' }));
-    expect(onAction).toHaveBeenCalledWith({ action: 'retry', agentId: 'relay' });
-  });
-
-  it('tells the reader whose turn it is and whom a new message would wait behind', () => {
-    const state = roomFixture({
-      events: [{
-        seq: 2, messageId: 'web:2', author: { kind: 'human', id: 'director' }, kind: 'human',
-        body: '开始', addressedTo: [], at: '2026-09-17T00:00:00Z',
-      }],
-      runningAgentIds: ['codex'],
-    });
+  it('shows a member\'s derived state, and a failed turn\'s error, in the members column', () => {
+    const state = roomFixture();
     state.agents = state.agents.map(agent => {
-      if (agent.id === 'relay' || agent.id === 'claude') return { ...agent, status: 'posted', seenSeq: 2 };
-      if (agent.id === 'codex') return { ...agent, status: 'running', seenSeq: 2 };
-      return { ...agent, seenSeq: 0 };
+      if (agent.id === 'codex') return { ...agent, status: 'working' };
+      if (agent.id === 'claude') {
+        return { ...agent, status: 'failed', error: 'ACP connection closed' };
+      }
+      return agent;
     });
     render(<RoomWorkspace state={state} pending={false} value=""
       onValueChange={vi.fn()} onAction={vi.fn()} />);
-    expect(screen.getByText('当前 codex · 待回复 2 位')).toBeTruthy();
-    expect(screen.getByText(/排在/).textContent).toContain('dsh');
-    expect(screen.queryByRole('button', { name: /停/ })).toBeNull();
+    const aside = screen.getByRole('complementary', { name: '成员' });
+    expect(within(aside).getByText('工作中')).toBeTruthy();
+    expect(within(aside).getByText('失败')).toBeTruthy();
+    expect(within(aside).getByText('ACP connection closed')).toBeTruthy();
+    // The transcript itself stays free of it: the record holds what was said.
+    expect(screen.getByRole('region', { name: '房间对话' }).textContent).not.toContain('ACP connection closed');
+  });
+
+  it('keeps the composer editable while a member is mid-turn', () => {
+    const state = roomFixture();
+    state.agents = state.agents.map(agent =>
+      agent.id === 'codex' ? { ...agent, status: 'working' } : agent);
+    render(<RoomWorkspace state={state} pending={false} value=""
+      onValueChange={vi.fn()} onAction={vi.fn()} />);
     // The composer is a Tiptap editor now, so "still editable" reads off
     // contenteditable rather than a textarea's disabled flag.
     expect(screen.getByRole('textbox').getAttribute('contenteditable')).toBe('true');

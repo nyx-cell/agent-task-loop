@@ -9,7 +9,7 @@ import {
 } from 'react-router';
 import { getRoomLabHost } from '../room-lab/composition.server';
 import { AgentDesk } from '../room-lab/presentation/AgentDesk';
-import { RoomLabInputError } from '../room-lab/application/room-lab-service.server';
+import { RoomInputError } from '../room-lab/application/room-service.server';
 import { roomActionMessage, roomActionStatus } from '../room-lab/application/room-error';
 import {
   LocalRequestError,
@@ -45,7 +45,7 @@ export async function action({ request }: ActionFunctionArgs) {
     const intent = String(form.get('intent') ?? 'scan');
     if (intent === 'save-prompt') {
       const agentId = String(form.get('agentId') ?? '');
-      if (!host.agents.has(agentId)) throw new RoomLabInputError('Unknown agent');
+      if (!host.agents.has(agentId)) throw new RoomInputError('Unknown agent');
       host.saveSystemPrompt(agentId, String(form.get('systemPrompt') ?? ''));
       return data<AgentDeskView>(host.agentDesk(), { headers: noStoreHeaders });
     }

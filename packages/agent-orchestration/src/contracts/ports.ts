@@ -1,5 +1,4 @@
 import type { LeaseRecord } from './lease';
-import type { ProcessRunner } from './types';
 
 /**
  * The lease record's old name, kept so `domain/lock.ts` keeps its exact
@@ -27,5 +26,3 @@ export interface IntervalScheduler {
   setInterval(fn: () => void, ms: number): IntervalHandle;
   clearInterval(handle: IntervalHandle): void;
 }
-
-export type { ProcessRunner };

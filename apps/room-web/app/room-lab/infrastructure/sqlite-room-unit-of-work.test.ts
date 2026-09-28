@@ -9,7 +9,7 @@ import { SqliteRoomStore } from './sqlite-room-store.server';
 
 const TENANT = 'local';
 
-describe('SqliteRoomUnitOfWork wake depth', () => {
+describe('SqliteRoomStreamStore wake depth', () => {
   it("writes each event's wake depth and reads it back after a reopen", async () => {
     const root = mkdtempSync(join(tmpdir(), 'rivus-room-unit-of-work-'));
     const store = SqliteRoomStore.open(root);
@@ -35,10 +35,16 @@ describe('SqliteRoomUnitOfWork wake depth', () => {
       body: '比较三档价格',
       addressedTo: [],
     });
-    stream.advanceSeen(codex, admitted.event.seq);
-    const reply = await stream.replyInSerial({ session: codex, body: '先看成本' });
-    if (reply.outcome !== 'posted') throw new Error('the reply should have posted');
-    expect(reply.event.wakeDepth).toBe(admitted.event.wakeDepth + 1);
+    const posted = await stream.speak({
+      session: codex,
+      body: '先看成本',
+      addressedTo: [],
+      readUpToSeq: admitted.event.seq,
+      triggerSeq: admitted.event.seq,
+    });
+    if (posted.outcome !== 'posted') throw new Error('the post should have gone through');
+    expect(posted.event.wakeDepth).toBe(admitted.event.wakeDepth + 1);
+    expect(stream.inspectSession(codex)).toMatchObject({ seenSeq: posted.seq });
 
     // A second connection to the same file, not the process's own: the depths
     // have to come back from the column.
