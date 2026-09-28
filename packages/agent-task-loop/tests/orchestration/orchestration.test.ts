@@ -2,17 +2,11 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  createMemoryOrchestration,
-  createOrchestration,
-  FileOrchestrationStore,
-  type LockRecord,
-  type Orchestration,
-  OrchestrationConflictError,
-  OrchestrationSeatError,
-  OrchestrationTemplateError,
-} from '../src/index';
-import { lockPath } from '../src/infrastructure/node-paths';
+import { type LockRecord, OrchestrationConflictError, OrchestrationSeatError, OrchestrationTemplateError } from '@rivus/agent-orchestration';
+import { createMemoryOrchestration, createOrchestration } from '../../src/orchestration/node-factory';
+import type { Orchestration } from '../../src/orchestration/orchestration';
+import { FileOrchestrationStore } from '../../src/orchestration/file-store';
+import { lockPath } from '../../src/orchestration/node-paths';
 
 function tempDir(): string {
   return mkdtempSync(path.join(os.tmpdir(), 'agent-orch-'));

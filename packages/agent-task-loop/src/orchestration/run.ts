@@ -1,5 +1,5 @@
-import { OrchestrationRunError, OrchestrationSeatError } from '../contracts/errors';
-import type { ObservedRun, OpenRunInput, RunSnapshot, SeatBinding, SeatState, TemplateSpec } from '../contracts/types';
+import { OrchestrationRunError, OrchestrationSeatError } from '@rivus/agent-orchestration';
+import type { ObservedRun, OpenRunInput, RunSnapshot, SeatBinding, SeatState, TemplateSpec } from './types';
 
 /** Aggregate root for one occupied orchestration run. */
 export class Run {

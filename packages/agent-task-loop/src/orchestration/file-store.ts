@@ -15,12 +15,11 @@ import type {
   FencedResult,
   FencingToken,
   LockRecord,
-  OrchestrationStore,
-} from '../contracts/ports';
-import type { RunSnapshot } from '../contracts/types';
-import { sameLock } from '../domain/lock';
+} from '@rivus/agent-orchestration';
+import { nodeLiveness, sameLock } from '@rivus/agent-orchestration';
+import type { OrchestrationStore } from './ports';
+import type { RunSnapshot } from './types';
 import { lockPath, runDir, statePath } from './node-paths';
-import { nodeLiveness } from './node-liveness';
 
 interface GuardOwner {
   pid: number;

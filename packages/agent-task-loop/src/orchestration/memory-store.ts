@@ -1,11 +1,11 @@
+import { sameLock } from '@rivus/agent-orchestration';
 import type {
   FencedResult,
   FencingToken,
   LockRecord,
-  OrchestrationStore,
-} from '../contracts/ports';
-import type { RunSnapshot } from '../contracts/types';
-import { sameLock } from '../domain/lock';
+} from '@rivus/agent-orchestration';
+import type { OrchestrationStore } from './ports';
+import type { RunSnapshot } from './types';
 
 export class MemoryOrchestrationStore implements OrchestrationStore {
   private readonly locks = new Map<string, LockRecord>();

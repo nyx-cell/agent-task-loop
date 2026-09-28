@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -53,9 +53,13 @@ describe('package boundary', () => {
   });
 
   it('keeps application free of filesystem and execa', () => {
+    const dir = path.join(srcRoot, 'application');
+    // RFC 0015 S2 commit one empties this directory by moving the task baton
+    // to agent-task-loop; commit two refills it with the lease manager, the
+    // agent runtime and the tool server.
+    if (!existsSync(dir) || walk(dir).length === 0) return;
     const banned = ['node:fs', 'node:os', 'execa', 'homedir'];
-    const files = walk(path.join(srcRoot, 'application'));
-    expect(files.length).toBeGreaterThan(0);
+    const files = walk(dir);
     for (const file of files) {
       const text = readFileSync(file, 'utf8');
       for (const token of banned) {

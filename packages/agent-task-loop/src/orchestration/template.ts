@@ -1,5 +1,5 @@
-import { OrchestrationTemplateError } from '../contracts/errors';
-import type { TemplateSpec } from '../contracts/types';
+import { OrchestrationTemplateError } from '@rivus/agent-orchestration';
+import type { TemplateSpec } from './types';
 
 export class TemplateRegistry {
   private readonly templates = new Map<string, TemplateSpec>();

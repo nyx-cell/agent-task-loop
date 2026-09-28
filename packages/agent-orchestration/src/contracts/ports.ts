@@ -1,4 +1,4 @@
-import type { ProcessRunner, RunSnapshot } from './types';
+import type { ProcessRunner } from './types';
 
 export interface LockRecord {
   key: string;
@@ -17,23 +17,6 @@ export type FencingToken = Pick<LockRecord, 'key' | 'holderPid' | 'holderId'>;
 export type FencedResult<T> =
   | { executed: true; value: T }
   | { executed: false };
-
-export interface OrchestrationStore {
-  tryCreateLock(key: string, record: LockRecord): boolean;
-  tryReplaceLock(key: string, expected: LockRecord, next: LockRecord): boolean;
-  tryCommitRun(expected: LockRecord, next: LockRecord, snapshot: RunSnapshot): boolean;
-  tryReleaseRun(expected: LockRecord, snapshot: RunSnapshot): boolean;
-  lockExists(key: string): boolean;
-  readLock(key: string): LockRecord | undefined;
-  writeState(snapshot: RunSnapshot): void;
-  readState(key: string): RunSnapshot | undefined;
-  listKeys(): string[];
-  runFenced<T>(
-    token: FencingToken,
-    operation: () => Promise<T>,
-    signal?: AbortSignal,
-  ): Promise<FencedResult<T>>;
-}
 
 export interface Clock {
   now(): number;

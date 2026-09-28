@@ -1,9 +1,6 @@
-import {
-  createOrchestration,
-  type CreateOrchestrationOptions,
-  type Orchestration,
-  type TemplateSpec,
-} from '@rivus/agent-orchestration';
+import { createOrchestration, type CreateOrchestrationOptions } from './node-factory';
+import type { Orchestration } from './orchestration';
+import type { TemplateSpec } from './types';
 
 export const CLASSIC_DELIVERY_TEMPLATE: TemplateSpec = {
   id: 'classic-delivery',

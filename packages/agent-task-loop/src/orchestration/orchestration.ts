@@ -1,17 +1,22 @@
-import { OrchestrationConflictError, OrchestrationNotFoundError, OrchestrationSeatError } from '../contracts/errors';
+import {
+  holdsLock,
+  isLockFresh,
+  OrchestrationConflictError,
+  OrchestrationNotFoundError,
+  OrchestrationSeatError,
+} from '@rivus/agent-orchestration';
 import type {
   Clock,
   IntervalScheduler,
   FencingToken,
   LockRecord,
-  OrchestrationStore,
   ProcessIdentity,
   ProcessLiveness,
-} from '../contracts/ports';
-import type { OpenRunInput, ObservedRun, ProcessRunner, RunSnapshot, SeatBind, SpawnResult } from '../contracts/types';
-import { holdsLock, isLockFresh } from '../domain/lock';
-import { Run } from '../domain/run';
-import { TemplateRegistry } from '../domain/template';
+} from '@rivus/agent-orchestration';
+import type { OpenRunInput, ObservedRun, ProcessRunner, RunSnapshot, SeatBind, SpawnResult } from './types';
+import type { OrchestrationStore } from './ports';
+import { Run } from './run';
+import { TemplateRegistry } from './template';
 
 export interface OrchestrationDependencies {
   store: OrchestrationStore;

@@ -1,5 +1,5 @@
 import { execa } from 'execa';
-import type { ProcessRunner } from '../contracts/types';
+import type { ProcessRunner } from './types';
 
 export const execaProcessRunner: ProcessRunner = async (input) => {
   const subprocess = execa(input.cmd, input.args, {

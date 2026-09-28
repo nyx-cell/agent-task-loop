@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { OrchestrationSeatError } from '../../src/contracts/errors';
-import { Run } from '../../src/domain/run';
+import { OrchestrationSeatError } from '@rivus/agent-orchestration';
+import { Run } from '../../src/orchestration/run';
 
 function openRun(): Run {
   return Run.open({

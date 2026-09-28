@@ -24,9 +24,6 @@
     "test": "rslib build && vitest run",
     "test:watch": "vitest"
   },
-  "dependencies": {
-    "execa": "^9.6.0"
-  },
   "devDependencies": {
     "@rsbuild/core": "^2.0.3",
     "@rslib/core": "^0.21.3",

@@ -1,13 +1,9 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {
-  createMemoryOrchestration,
-  type Orchestration,
-  type ProcessRunner,
-  type SeatBind,
-  type TemplateSpec,
-} from '@rivus/agent-orchestration';
+import type { ProcessRunner, SeatBind, TemplateSpec } from '../../orchestration/types';
+import type { Orchestration } from '../../orchestration/orchestration';
+import { createMemoryOrchestration } from '../../orchestration/node-factory';
 import type {
   TaskDeliveryRuntime,
   TaskDeliveryRuntimeView,
