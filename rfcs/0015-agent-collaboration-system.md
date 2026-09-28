@@ -896,3 +896,92 @@ Settled during the 2026-09-23 review of this document:
 | The harness mechanics (MCP hosting, permission answers, hook dispatch, profiles, workspace files) are the control plane's. Their content is the endpoint's |
 | Scheduling is an Inbox per (room, agent) in the control plane: one activation at a time, wakes collapse, unread events are delivered together. One long-lived ACP session per (room, agent) |
 | A private exchange between agents is a room with fewer members, opened with `room_dm`, always visible to the person, counted against the parent round |
+
+## S5 measurement
+
+Measured 2026-09-28 against the implementation on this branch. One room per
+configuration — `broadcast`, `addressed`, `serial` — same script each time,
+driven through the endpoint's service layer (`RoomService` on the
+`AgentRuntime`/`ToolServer` control plane, a scratch sqlite library, no UI).
+Each room ran the same two rounds: a question (这个接口为什么偶发 502？) and a
+count-off (报数). Seated: @claude (`claude-agent-acp` 0.81.0), @codex
+(`codex-acp` 1.13.0), @opencode (OpenCode 1.18.30); all three probed `ready`
+before the run. Numbers come from the `turns` table and the ACP
+`usage_update` stream, tapped at the connector.
+
+**Gap, recorded not filled.** @opencode reached `ready` — the probe only
+proves `initialize` and a trial `session/new` — but every one of its six
+activations died on the first prompt with the adapter error
+`Internal error: 余额不足或无可用资源包,请充值。` (its backend account is out
+of credit). The rows stand in `turns` as outcome `timeout` with the error in
+`turns.error` (a null stop reason with an error reads as `timeout` today),
+and its only `usage_update` carries `used=0`. Every number below is the two
+live members; nothing is interpolated for the third.
+
+| Metric | broadcast | addressed | serial |
+| --- | --- | --- | --- |
+| Activations, question round | 3 | 3 | 3 |
+| Activations, count-off round | 3 | 3 | 3 |
+| Wall admit → last pass, question | 71 s | 72 s | 154 s |
+| Wall admit → last pass, count-off | 438 s | 94 s | 443 s |
+| HELD (events / turns) | 1 / 1 | 1 / 1 | 0 / 0 |
+
+Tokens per activation, from `usage_update` as context after the turn, with
+the delta against the same member's previous activation in the room;
+`$` is @claude's per-turn cost from the same stream (codex sends no cost):
+
+| Activation | broadcast question | broadcast count-off | addressed question | addressed count-off | serial question | serial count-off |
+| --- | --- | --- | --- | --- | --- | --- |
+| claude, spoken | 22.9k, $0.21 | — | 22.1k, $0.13 | — | 21.6k, $0.10 | — |
+| claude, silent | — | 57.9k (+35.0k), $1.47 | — | 69.1k (+47.0k), $0.39 | — | 59.1k (+37.5k), $0.66 |
+| codex, spoken | 26.9k | — | 26.5k | — | 27.2k | — |
+| codex, silent | — | 33.4k (+6.5k) | — | 27.4k (+0.9k) | — | 27.9k (+0.7k) |
+
+What the numbers say:
+
+1. **Every round is one activation per woken member, in all three
+   configurations.** The dispatcher runs only on the human admit — the
+   `sendMessage` handler is the sole `dispatch` call site — so a member's
+   post wakes nobody. The walkthrough chains (four turns for the question,
+   nine for the broadcast count-off, five for serial) never start. The
+   broadcast `n²` blowup cannot happen yet, and serial has nothing to save,
+   because there is no second wave to serialize.
+2. **Serial turns a wall of `max(turns)` into `sum(turns)`.** Question round:
+   154 s against 71 s (three turns of 43/35/77 s run one after another
+   instead of overlapping). That is the whole effect; activation count and
+   tokens are identical.
+3. **HELD fires exactly where there is concurrency and resolves inside the
+   turn.** In each non-serial question round codex posted first and claude's
+   `room_speak` came back HELD once, read the post, and posted the revision
+   (`held_count 1`, outcome `posted`) — the "A question, two answers"
+   walkthrough, minus the follow-up wake.
+4. **The dominant cost is per activation, not per round.** A member's first
+   activation in a room carries ~21.6–26.9k tokens of context after the turn
+   — system prompt, room facts, inbox, the two Room tools, adapter
+   scaffolding — before any real content. It is the same under all three
+   configurations; no wake mode touches it.
+5. **Silence is the expensive outcome when the harness invites tool work.**
+   In the count-off rounds both live members passed. Codex read and passed
+   (+0.7k to +6.5k tokens). Claude worked the empty `cwd` first — 94 to 438 s,
+   +35.0k to +47.0k tokens, $0.39 to $1.47 per silent pass, against $0.10 to
+   $0.21 for a spoken one. A pass is only free when the member treats it as
+   reading, and the harness gives it every tool not to.
+6. **The count-off produced no count anywhere**: zero posts after 报数 under
+   all three configurations. The walkthrough assumes members read their seat
+   number and say it; the live members read the record and passed. The 9-vs-5
+   turn difference that motivates the serial switch is not observable today.
+7. **`addressed` measured identical to `broadcast`**: both prompts were
+   unaddressed (wake everyone), and since posts do not dispatch, the
+   addressed filter never engaged. The 438 s against 94 s count-off
+   difference between the two rooms is the same configuration semantics —
+   it is run-to-run variance in how much tool work claude did before passing.
+
+**Default decision: `serial` stays off; broadcast remains the default.**
+Serial wins nothing in these numbers — it does not reduce activations (there
+is no wake-on-post chain to serialize), does not reduce tokens (cost is per
+activation), and multiplies wall time wherever more than one member runs.
+The cost problem to solve is the per-activation fixed context (~22–27k) and
+members spending minutes of tool work on conversation rounds; both belong to
+the harness and the member's prompt, not to the wake mode. Revisit serial
+only after dispatch-on-post lands and real turn chains exist — there it is
+the guardrail the Risks section describes.
