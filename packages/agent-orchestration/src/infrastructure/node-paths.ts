@@ -11,3 +11,16 @@ export function safeSegment(id: string): string {
   const hash = createHash('sha1').update(id).digest('hex').slice(0, 8);
   return `${readable}-${hash}`;
 }
+
+export function runDir(baseDir: string, key: string): string {
+  return path.join(baseDir, safeSegment(key));
+}
+
+/**
+ * The durable lease file. The Task package's run-state store keeps its
+ * `state.json` in the same per-key directory; keep the two `safeSegment`
+ * copies in sync.
+ */
+export function leasePath(baseDir: string, key: string): string {
+  return path.join(runDir(baseDir, key), 'lease.lock');
+}

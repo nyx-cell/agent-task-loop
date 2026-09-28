@@ -1,12 +1,16 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { type LockRecord, OrchestrationConflictError, OrchestrationSeatError, OrchestrationTemplateError } from '@rivus/agent-orchestration';
+import {
+  type LockRecord,
+  leasePath,
+  OrchestrationConflictError,
+  OrchestrationSeatError,
+  OrchestrationTemplateError,
+} from '@rivus/agent-orchestration';
 import { createMemoryOrchestration, createOrchestration } from '../../src/orchestration/node-factory';
 import type { Orchestration } from '../../src/orchestration/orchestration';
-import { FileOrchestrationStore } from '../../src/orchestration/file-store';
-import { lockPath } from '../../src/orchestration/node-paths';
 
 function tempDir(): string {
   return mkdtempSync(path.join(os.tmpdir(), 'agent-orch-'));
@@ -94,7 +98,7 @@ describe('Orchestration open / occupy', () => {
         bind: { lead: { cmd: 'codex' } },
       }),
     ).rejects.toBeInstanceOf(OrchestrationSeatError);
-    expect(existsSync(lockPath(dir, 'task:invalid'))).toBe(false);
+    expect(existsSync(leasePath(dir, 'task:invalid'))).toBe(false);
   });
 
   it('rejects a second open on the same key while the lock is fresh', async () => {
@@ -177,55 +181,6 @@ describe('Orchestration open / occupy', () => {
     expect(b.allow('task:T-1', 'review').allowed).toBe('review');
   });
 
-  it('replaces a stale file lock with compare-and-swap semantics', () => {
-    const dir = tempDir();
-    dirs.push(dir);
-    const store = new FileOrchestrationStore(dir);
-    const expected: LockRecord = {
-      key: 'task:T-1',
-      holderPid: 1,
-      holderId: 'holder-a',
-      heartbeatAt: new Date(1_000).toISOString(),
-    };
-    const nextA: LockRecord = {
-      ...expected,
-      holderPid: 2,
-      holderId: 'holder-b',
-    };
-    const nextB: LockRecord = {
-      ...expected,
-      holderPid: 3,
-      holderId: 'holder-c',
-    };
-
-    expect(store.tryCreateLock(expected.key, expected)).toBe(true);
-    expect(store.tryReplaceLock(expected.key, expected, nextA)).toBe(true);
-    expect(store.tryReplaceLock(expected.key, expected, nextB)).toBe(false);
-    expect(store.readLock(expected.key)).toEqual(nextA);
-  });
-
-  it('recovers a file guard left behind by a crashed process', () => {
-    const dir = tempDir();
-    dirs.push(dir);
-    const store = new FileOrchestrationStore(dir);
-    const expected: LockRecord = {
-      key: 'task:T-1',
-      holderPid: 1,
-      holderId: 'holder-a',
-      heartbeatAt: new Date(1_000).toISOString(),
-    };
-    const next: LockRecord = {
-      ...expected,
-      holderPid: 2,
-      holderId: 'holder-b',
-    };
-    expect(store.tryCreateLock(expected.key, expected)).toBe(true);
-    mkdirSync(`${lockPath(dir, expected.key)}.guard`);
-
-    expect(store.tryReplaceLock(expected.key, expected, next)).toBe(true);
-    expect(store.readLock(expected.key)).toEqual(next);
-  });
-
   it('allows a new open after release', async () => {
     const instance = orch();
     await instance.open({ key: 'task:T-1', template: 'classic-delivery' });
@@ -245,7 +200,7 @@ describe('Orchestration open / occupy', () => {
     const instance = createOrchestration({ baseDir: dir });
     classic(instance);
     await instance.open({ key: 'task:T-1', template: 'classic-delivery' });
-    writeFileSync(lockPath(dir, 'task:T-1'), '{', 'utf8');
+    writeFileSync(leasePath(dir, 'task:T-1'), '{', 'utf8');
 
     const other = createOrchestration({ baseDir: dir });
     classic(other);
@@ -483,7 +438,7 @@ describe('Orchestration allow / facts / mail / spawn', () => {
     classic(instance);
     await instance.open({ key: 'task:T-1', template: 'classic-delivery' });
     writeFileSync(
-      lockPath(dir, 'task:T-1'),
+      leasePath(dir, 'task:T-1'),
       JSON.stringify({
         key: 'task:T-1',
         holderPid: process.pid + 1,

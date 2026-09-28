@@ -1,3 +1,52 @@
+// Contracts.
+export type {
+  Agent,
+  AgentBinding,
+  AgentId,
+  AgentRegistry,
+} from './contracts/agent';
+
+export type {
+  FencedResult,
+  FencingToken,
+  LeaseRecord,
+  LeaseStore,
+} from './contracts/lease';
+
+export type {
+  AgentConnection,
+  AgentConnector,
+  AgentProbe,
+  PermissionOutcome,
+  PermissionRequest,
+  SessionUpdate,
+  Unsubscribe,
+} from './contracts/connection';
+export type {
+  AgentCapabilities,
+  AuthMethod,
+  ContentBlock,
+  McpServer,
+  PermissionOption,
+  SessionId,
+  StopReason,
+  ToolCallUpdate,
+} from './contracts/connection';
+
+export type {
+  Harness,
+  PermissionPolicy,
+  ToolCall,
+  ToolDefinition,
+  TurnResult,
+} from './contracts/harness';
+
+export type {
+  Clock,
+  IntervalScheduler,
+  IntervalHandle,
+} from './contracts/ports';
+export type { LockRecord, ProcessIdentity, ProcessLiveness } from './contracts/ports';
 export type {
   ProcessRunner,
   ProcessRunnerInput,
@@ -5,17 +54,6 @@ export type {
   SeatBind,
   SpawnResult,
 } from './contracts/types';
-
-export type {
-  Clock,
-  IntervalScheduler,
-  IntervalHandle,
-  FencedResult,
-  FencingToken,
-  LockRecord,
-  ProcessIdentity,
-  ProcessLiveness,
-} from './contracts/ports';
 
 export {
   ORCHESTRATION_CONFLICT_CODE,
@@ -30,14 +68,25 @@ export {
   OrchestrationRunError,
 } from './contracts/errors';
 
-/**
- * Lock primitives shared with the Task package, which took over the run baton
- * in RFC 0015 S2 and still leases through this package.
- */
+// Domain and application.
 export { isLockFresh, holdsLock, sameLock } from './domain/lock';
+export { LeaseManager, type LeaseManagerDependencies } from './application/lease-manager';
+export {
+  AgentRuntime,
+  agentIdOf,
+  runtimeKey,
+  type ActivateHandler,
+  type AgentRuntimeOptions,
+  type Inbox,
+  type InboxState,
+} from './application/agent-runtime';
 
+// Infrastructure.
+export { MemoryAgentRegistry } from './infrastructure/memory-agent-registry';
+export { MemoryLeaseStore } from './infrastructure/memory-lease-store';
+export { FileLeaseStore } from './infrastructure/file-lease-store';
 export { nodeClock } from './infrastructure/node-clock';
 export { nodeIdentity } from './infrastructure/node-identity';
 export { nodeLiveness } from './infrastructure/node-liveness';
 export { nodeScheduler } from './infrastructure/node-scheduler';
-export { defaultBaseDir, safeSegment } from './infrastructure/node-paths';
+export { defaultBaseDir, leasePath, safeSegment } from './infrastructure/node-paths';

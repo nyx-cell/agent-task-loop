@@ -1,50 +1,60 @@
 # @rivus/agent-orchestration
 
-Register and occupy a multi-agent **run**: seats, turn-taking, shared context, and process spawn.
-
-This package does not know tasks, Feishu, GitHub, or review loops. Callers (today: `@rivus/agent-task-loop`) pass a string key, a template id, and seat bindings.
+The agent collaboration **control plane**: which agents exist, whether each can
+be reached, who may run right now, and how a turn is assembled and delivered
+(RFC 0015). Its noun is the **Agent**. It knows nothing about rooms and owns no
+database — the registry and the lease store are ports, implemented by the
+endpoint.
 
 ## Status
 
-Internal package (`private: true`). Not published yet.
+Internal package (`private: true`). Not published.
 
-Layout: `contracts/` and `domain/` are Node-free. File lock, `homedir`, and `execa` live in `infrastructure/`.
+Layout: `contracts/` and `domain/` are Node-free. The lease manager, the agent
+runtime, and the tool server live in `application/`; the connector, the
+profiles, and the stores in `infrastructure/`.
 
-## API
+## Entry points
+
+- `.` — the control plane without ACP: `Agent` / `AgentRegistry`,
+  `LeaseStore` / `LeaseManager`, `AgentRuntime` (the per-key Inbox),
+  `Harness` and its slots, the memory registry and lease stores, the file
+  lease store, and the Node clock/identity/liveness/scheduler adapters.
+- `./acp` — the ACP-bound pieces: `AcpConnector` (with `probe`), the
+  `claude` / `codex` / `opencode` profiles, and the `ToolServer` that hosts
+  tool definitions as one streamable-HTTP MCP endpoint per turn (with a stdio
+  shim, `bin/acp-tool-shim.js`, for adapters without `mcpCapabilities.http`).
+
+The split keeps consumers that only borrow the lease (the Task package) from
+pulling the ACP and MCP SDKs into their bundles.
+
+## Leasing
 
 ```ts
-const orch = createOrchestration({ baseDir });
-orch.templates.register({
-  id: 'classic-delivery',
-  seats: ['impl', 'review'],
-  allow: { start: 'impl' },
+const lease = new LeaseManager({
+  store: new FileLeaseStore(baseDir), // or MemoryLeaseStore
+  clock, identity, holderId, liveness,
 });
-
-await orch.open({
-  key: 'task:T-1',
-  template: 'classic-delivery',
-  bind: { impl: { cmd: 'grok' }, review: { cmd: 'codex' } },
-  context: { goal: '…', ref: { taskId: 'T-1' } },
-});
-
-orch.observe('task:T-1', 'impl');
-orch.allow('task:T-1', 'review');
-await orch.spawn('task:T-1', 'review', { cwd });
-orch.release('task:T-1');
+lease.acquire(key);      // `room:<roomId>:member:<agentId>` for a Room turn
+lease.heartbeat(key);    // compare-and-swap renewal
+await lease.fence(key, op); // linearize one external write
+lease.release(key);
 ```
 
-A second `open` on the same key fails with `OrchestrationConflictError` (`orchestration-conflict`) while the lock holder is alive and the heartbeat is fresh.
+A lease is fresh while the holder pid is alive and the heartbeat is within
+`staleAfterMs`. The Task package's run baton renews its lease here while its
+run state stays in its own store.
 
-Seat names are data. The kernel does not define `Team` or `Lead`.
+## Runtime
 
-## Domain model
+```ts
+const runtime = new AgentRuntime({ connector, registry, lease });
+runtime.onActivate(async (key) => buildHarness(key));
+runtime.wake(key);  // coalesces; never blocks the caller
+await runtime.cancel(key);
+```
 
-`Run` is the aggregate root. Seats are entities inside the Run and cannot be
-changed independently. Turn changes, command bindings (`cmd` and `args`), facts,
-mail, process state, and release all pass through Run behavior before the
-application service persists a snapshot. Binding environment variables remain
-ephemeral execution input and are omitted from snapshots and observed views.
-
-`Orchestration` coordinates occupancy IO, persistence, clocks, and process
-execution. Lock freshness is a domain policy; file stores, pid checks, and
-process runners are adapters. See RFC 0012 for the repository-wide rules.
+One activation at a time per key. An activation acquires the lease, connects
+or reuses the process, reuses or creates the session, asks `onActivate` for
+the Harness, applies the profile, prompts, runs the `afterTurn` hook, and
+releases.

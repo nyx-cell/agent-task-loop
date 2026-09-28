@@ -1,22 +1,11 @@
+import type { LeaseRecord } from './lease';
 import type { ProcessRunner } from './types';
 
-export interface LockRecord {
-  key: string;
-  holderPid: number;
-  holderId: string;
-  heartbeatAt: string;
-}
-
 /**
- * Stable ownership token used to serialize writes to resources outside the
- * orchestration store. `heartbeatAt` is deliberately excluded: heartbeats may
- * advance while one fenced write is in flight without changing its owner.
+ * The lease record's old name, kept so `domain/lock.ts` keeps its exact
+ * shape. Identical to `LeaseRecord`; the two names meet in the lease stores.
  */
-export type FencingToken = Pick<LockRecord, 'key' | 'holderPid' | 'holderId'>;
-
-export type FencedResult<T> =
-  | { executed: true; value: T }
-  | { executed: false };
+export type LockRecord = LeaseRecord;
 
 export interface Clock {
   now(): number;

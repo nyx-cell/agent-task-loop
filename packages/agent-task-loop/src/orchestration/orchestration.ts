@@ -1,32 +1,28 @@
 import {
-  holdsLock,
-  isLockFresh,
   OrchestrationConflictError,
   OrchestrationNotFoundError,
   OrchestrationSeatError,
 } from '@rivus/agent-orchestration';
+import type { LeaseManager } from '@rivus/agent-orchestration';
 import type {
   Clock,
   IntervalScheduler,
-  FencingToken,
   LockRecord,
   ProcessIdentity,
-  ProcessLiveness,
 } from '@rivus/agent-orchestration';
 import type { OpenRunInput, ObservedRun, ProcessRunner, RunSnapshot, SeatBind, SpawnResult } from './types';
-import type { OrchestrationStore } from './ports';
+import type { RunStateStore } from './ports';
 import { Run } from './run';
 import { TemplateRegistry } from './template';
 
 export interface OrchestrationDependencies {
-  store: OrchestrationStore;
+  state: RunStateStore;
+  lease: LeaseManager;
   clock: Clock;
   identity: ProcessIdentity;
   holderId: string;
-  liveness: ProcessLiveness;
   runner: ProcessRunner;
   scheduler: IntervalScheduler;
-  staleAfterMs?: number;
   heartbeatIntervalMs?: number;
 }
 
@@ -35,30 +31,33 @@ interface HeldRun {
   lock: LockRecord;
 }
 
+/**
+ * The Task pipeline's run baton, taken over from the control plane in RFC 0015
+ * S2. Seat turn-taking is this package's own concern; the lease behind every
+ * `open`, `heartbeat`, `fence` and `release` is the control plane's
+ * `LeaseManager`.
+ */
 export class Orchestration {
   readonly templates = new TemplateRegistry();
-  private readonly store: OrchestrationStore;
+  private readonly state: RunStateStore;
+  private readonly lease: LeaseManager;
   private readonly clock: Clock;
   private readonly identity: ProcessIdentity;
   private readonly holderId: string;
-  private readonly liveness: ProcessLiveness;
   private readonly runner: ProcessRunner;
   private readonly scheduler: IntervalScheduler;
-  private readonly staleAfterMs: number;
   private readonly heartbeatIntervalMs: number;
   private readonly envs = new Map<string, Map<string, Record<string, string>>>();
 
   constructor(dependencies: OrchestrationDependencies) {
-    this.store = dependencies.store;
+    this.state = dependencies.state;
+    this.lease = dependencies.lease;
     this.clock = dependencies.clock;
     this.identity = dependencies.identity;
     this.holderId = dependencies.holderId;
-    this.liveness = dependencies.liveness;
     this.runner = dependencies.runner;
     this.scheduler = dependencies.scheduler;
-    this.staleAfterMs = dependencies.staleAfterMs ?? 120_000;
-    this.heartbeatIntervalMs =
-      dependencies.heartbeatIntervalMs ?? Math.min(15_000, Math.max(1, Math.floor(this.staleAfterMs / 4)));
+    this.heartbeatIntervalMs = dependencies.heartbeatIntervalMs ?? 15_000;
   }
 
   async open(input: OpenRunInput): Promise<RunSnapshot> {
@@ -71,18 +70,18 @@ export class Orchestration {
       holder: this.holder,
       at: this.isoNow(),
     });
-    this.acquire(input.key);
+    this.lease.acquire(input.key);
     this.clearEnvs(input.key);
     for (const [seat, bound] of Object.entries(input.bind ?? {})) {
       if (bound.env) this.setEnv(input.key, seat, bound.env);
     }
     const snapshot = run.snapshot();
-    this.store.writeState(snapshot);
+    this.state.writeState(snapshot);
     return snapshot;
   }
 
   inspect(key: string): RunSnapshot {
-    const snapshot = this.store.readState(key);
+    const snapshot = this.state.readState(key);
     if (!snapshot) throw new OrchestrationNotFoundError(key);
     return snapshot;
   }
@@ -163,47 +162,30 @@ export class Orchestration {
     this.touch(this.requireHolder(key));
   }
 
-  /**
-   * Linearize one external write against every holder of this run.
-   *
-   * A holder that loses its lease during an already-started write may finish
-   * that write, but the store keeps the fence until it finishes. A successor
-   * holder therefore cannot start a newer write that the old write could later
-   * overwrite. A holder that is already stale never enters the operation.
-   */
   async fence<T>(
     key: string,
     operation: () => Promise<T>,
     signal?: AbortSignal,
   ): Promise<T> {
-    signal?.throwIfAborted();
-    const held = this.requireHolder(key);
-    const token: FencingToken = {
-      key,
-      holderPid: held.lock.holderPid,
-      holderId: held.lock.holderId,
-    };
-    const result = await this.store.runFenced(token, operation, signal);
-    if (!result.executed) {
-      throw new OrchestrationConflictError(key, this.store.readLock(key)?.holderPid);
-    }
-    return result.value;
+    return this.lease.fence(key, operation, signal);
   }
 
   release(key: string): void {
-    const lock = this.store.readLock(key);
-    if (!this.isOwnedLock(lock)) return;
-    const snapshot = this.store.readState(key);
+    const lock = this.lease.read(key);
+    if (!lock || lock.holderPid !== this.identity.pid || lock.holderId !== this.holderId) return;
+    const snapshot = this.state.readState(key);
     if (!snapshot || snapshot.holderId !== this.holderId) return;
     const run = Run.restore(snapshot);
     run.release(this.isoNow());
-    if (!this.store.tryReleaseRun(lock, run.snapshot())) return;
-    this.clearEnvs(key);
+    // The released state lands before the lease goes, so a successor holder
+    // can never see our stale write after it took over.
+    this.state.writeState(run.snapshot());
+    this.lease.release(key);
   }
 
   listRuns(): RunSnapshot[] {
-    return this.store.listKeys().flatMap((key) => {
-      const snapshot = this.store.readState(key);
+    return this.state.listKeys().flatMap((key) => {
+      const snapshot = this.state.readState(key);
       return snapshot ? [snapshot] : [];
     });
   }
@@ -220,38 +202,10 @@ export class Orchestration {
     return { pid: this.identity.pid, id: this.holderId };
   }
 
-  private acquire(key: string): void {
-    const record: LockRecord = {
-      key,
-      holderPid: this.identity.pid,
-      holderId: this.holderId,
-      heartbeatAt: this.isoNow(),
-    };
-    if (this.store.tryCreateLock(key, record)) return;
-    const existing = this.store.readLock(key);
-    if (!existing) {
-      if (this.store.lockExists(key)) throw new OrchestrationConflictError(key);
-      if (this.store.tryCreateLock(key, record)) return;
-      throw new OrchestrationConflictError(key, this.store.readLock(key)?.holderPid);
-    }
-    if (isLockFresh(existing, this.clock.now(), this.staleAfterMs, (pid) => this.liveness.isAlive(pid))) {
-      throw new OrchestrationConflictError(key, existing.holderPid);
-    }
-    if (!this.store.tryReplaceLock(key, existing, record)) {
-      throw new OrchestrationConflictError(key, this.store.readLock(key)?.holderPid);
-    }
-  }
-
   private requireHolder(key: string): HeldRun {
     const snapshot = this.inspect(key);
     if (!snapshot.occupied) throw new OrchestrationNotFoundError(key);
-    const lock = this.store.readLock(key);
-    if (
-      !lock ||
-      !holdsLock(lock, this.holder, this.clock.now(), this.staleAfterMs, (pid) => this.liveness.isAlive(pid))
-    ) {
-      throw new OrchestrationConflictError(key, lock?.holderPid);
-    }
+    const lock = this.lease.requireHeld(key);
     if (snapshot.holderId !== this.holderId) {
       throw new OrchestrationConflictError(key, lock.holderPid);
     }
@@ -268,15 +222,12 @@ export class Orchestration {
     const heartbeatAt = this.isoNow();
     held.run.heartbeat(heartbeatAt);
     const snapshot = held.run.snapshot();
-    const next: LockRecord = { ...held.lock, heartbeatAt };
-    if (!this.store.tryCommitRun(held.lock, next, snapshot)) {
-      throw new OrchestrationConflictError(held.run.key, this.store.readLock(held.run.key)?.holderPid);
-    }
+    // The lease CAS is the commit point: once it lands this process still
+    // holds the key, so the state write follows; when it fails the write
+    // never happens.
+    this.lease.heartbeat(held.run.key);
+    this.state.writeState(snapshot);
     return snapshot;
-  }
-
-  private isOwnedLock(lock: LockRecord | undefined): lock is LockRecord {
-    return !!lock && lock.holderPid === this.identity.pid && lock.holderId === this.holderId;
   }
 
   private clearEnvs(key: string): void {
