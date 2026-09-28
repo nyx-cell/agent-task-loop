@@ -45,8 +45,10 @@ export const toneText: Record<StatusTone, string> = {
   err: 'text-destructive',
 };
 
-/** A member's CLI as a Badge variant. */
+/** A member's row as a Badge variant: probe states read as states do. */
 export const availabilityVariant = {
-  runnable: 'info',
   missing: 'muted',
+  'needs-login': 'warning',
+  ready: 'info',
+  seated: 'success',
 } as const;

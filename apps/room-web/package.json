@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:workspace-deps": "pnpm --filter @rivus/agent-orchestration build && pnpm --filter @rivus/agent-room build && pnpm --filter @rivus/agent-task-loop build && pnpm --filter @rivus/agent-finder-core build",
+    "build:workspace-deps": "pnpm --filter @rivus/agent-orchestration build && pnpm --filter @rivus/agent-room build && pnpm --filter @rivus/agent-task-loop build",
     "prebuild": "pnpm build:workspace-deps",
     "predev": "pnpm build:workspace-deps",
     "dev": "react-router dev --host 127.0.0.1 --port 3210 --strictPort",
@@ -16,13 +16,14 @@
     "typecheck": "react-router typegen && tsc --noEmit"
   },
   "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.81.0",
+    "@agentclientprotocol/codex-acp": "1.13.0",
     "@agentclientprotocol/sdk": "1.5.0",
     "@fontsource/inter": "^5.3.0",
     "@fontsource/noto-serif-sc": "^5.3.0",
     "@phosphor-icons/react": "^2.1.10",
     "@react-router/node": "^7.18.3",
     "@react-router/serve": "^7.18.3",
-    "@rivus/agent-finder-core": "workspace:*",
     "@rivus/agent-orchestration": "workspace:*",
     "@rivus/agent-room": "workspace:*",
     "@rivus/agent-task-loop": "workspace:*",

@@ -5,10 +5,15 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import type { RoomId } from '@rivus/agent-room';
 import { SqliteRoomStore } from './sqlite-room-store.server';
-import { RoomLabHost, runnableInventory } from '../application/room-lab-host.server';
+import { RoomLabHost } from '../application/room-lab-host.server';
 import { DEFAULT_AGENT_SYSTEM_PROMPT } from './migrations/0003_agent_system_prompt.seed';
 
 const TENANT = 'local';
+
+/** Every row answers its probe ready, so the tests never start an ACP process. */
+const probeReadyBinding = {
+  probe: () => Promise.resolve({ status: 'ready' as const, capabilities: {} }),
+};
 
 function roomIdOf(id: string): RoomId {
   return { tenantId: TENANT, conversationId: id };
@@ -31,11 +36,11 @@ describe('sqlite Room persistence', () => {
   it('keeps rooms and messages after a new host is opened', async () => {
     const root = mkdtempSync(join(tmpdir(), 'rivus-room-web-'));
     const store = SqliteRoomStore.open(root);
-    const host = new RoomLabHost(store, { listAgents: runnableInventory });
+    const host = new RoomLabHost(store, probeReadyBinding);
     const created = await host.create({ title: 'Q3 定价方案', memberIds: ['codex'] });
     await admitHuman(store, created.roomId, 'web:persist-1', '先比较三档价格');
 
-    const restored = new RoomLabHost(SqliteRoomStore.open(root), { listAgents: runnableInventory });
+    const restored = new RoomLabHost(SqliteRoomStore.open(root), probeReadyBinding);
     const snapshot = await restored.snapshot(created.roomId);
     expect(snapshot.title).toBe('Q3 定价方案');
     expect(snapshot.events[0]).toMatchObject({
@@ -49,11 +54,11 @@ describe('sqlite Room persistence', () => {
 
   it('keeps a room\'s wake, serial and cwd settings across a reopen', async () => {
     const root = mkdtempSync(join(tmpdir(), 'rivus-room-web-'));
-    const host = new RoomLabHost(SqliteRoomStore.open(root), { listAgents: runnableInventory });
+    const host = new RoomLabHost(SqliteRoomStore.open(root), probeReadyBinding);
     const created = await host.create({ title: '串行房', memberIds: ['codex'] });
     host.act(created.roomId, { action: 'settings', wake: 'addressed', serial: true, cwd: '/tmp/room-work' });
 
-    const reopened = new RoomLabHost(SqliteRoomStore.open(root), { listAgents: runnableInventory });
+    const reopened = new RoomLabHost(SqliteRoomStore.open(root), probeReadyBinding);
     const snapshot = await reopened.snapshot(created.roomId);
     expect(snapshot.settings).toEqual({ wake: 'addressed', serial: true, cwd: '/tmp/room-work' });
 
@@ -64,7 +69,7 @@ describe('sqlite Room persistence', () => {
 
   it('keeps catalog order by creation time after a later room is opened', async () => {
     const root = mkdtempSync(join(tmpdir(), 'rivus-room-web-'));
-    const host = new RoomLabHost(SqliteRoomStore.open(root), { listAgents: runnableInventory });
+    const host = new RoomLabHost(SqliteRoomStore.open(root), probeReadyBinding);
     const first = await host.create({ title: 'Q3 定价方案', memberIds: ['codex'] });
     const second = await host.create({ title: 'README 改写', memberIds: ['codex'] });
     const snapshot = await host.snapshot(first.roomId);
@@ -74,7 +79,7 @@ describe('sqlite Room persistence', () => {
 
   it('does not rewrite lastOpened when snapshotting the same room', async () => {
     const root = mkdtempSync(join(tmpdir(), 'rivus-room-web-'));
-    const host = new RoomLabHost(SqliteRoomStore.open(root), { listAgents: runnableInventory });
+    const host = new RoomLabHost(SqliteRoomStore.open(root), probeReadyBinding);
     const created = await host.create({ title: '同一房间', memberIds: ['codex'] });
     const first = host.lastOpened()?.lastOpenedAt;
     await host.snapshot(created.roomId);
@@ -84,10 +89,10 @@ describe('sqlite Room persistence', () => {
   it('persists a system prompt and carries it onto the next turn\'s harness', async () => {
     const root = mkdtempSync(join(tmpdir(), 'rivus-room-web-'));
     const store = SqliteRoomStore.open(root);
-    const host = new RoomLabHost(store, { listAgents: runnableInventory });
+    const host = new RoomLabHost(store, probeReadyBinding);
     const created = await host.create({ title: 'Q3 定价方案', memberIds: ['codex'] });
     host.saveSystemPrompt('codex', '  SENTINEL_SYS_PROMPT  ');
-    const restored = new RoomLabHost(SqliteRoomStore.open(root), { listAgents: runnableInventory });
+    const restored = new RoomLabHost(SqliteRoomStore.open(root), probeReadyBinding);
     expect(restored.agents.get('codex')?.systemPrompt).toBe('SENTINEL_SYS_PROMPT');
     restored.saveSystemPrompt('codex', '   ');
     // The row stays; it just carries nothing to prepend.
@@ -108,54 +113,96 @@ describe('sqlite Room persistence', () => {
     expect(DEFAULT_AGENT_SYSTEM_PROMPT.length).toBeGreaterThan(0);
   });
 
-  it('re-reads the agents table when the desk is rescanned', () => {
+  it('re-reads the agents table when the desk is rescanned', async () => {
     const root = mkdtempSync(join(tmpdir(), 'rivus-room-web-'));
-    const host = new RoomLabHost(SqliteRoomStore.open(root), { listAgents: runnableInventory });
-    expect(host.agents.get('dsh')?.command).toBe('NO_COLOR=1 dsh --profile headless');
+    const host = new RoomLabHost(SqliteRoomStore.open(root), probeReadyBinding);
+    expect(host.agents.get('claude')?.command).toBe('claude-agent-acp');
 
     // Someone edits the row with sqlite3 while the server is running: a second
     // connection to the same file, not this host's own.
     const editor = new DatabaseSync(join(root, 'rooms.sqlite'));
     editor.prepare('UPDATE agents SET command = ?, label = ? WHERE id = ?')
-      .run('dsh --profile other', 'DSH 2', 'dsh');
+      .run('claude-agent-acp --other', 'Claude 2', 'claude');
     editor.close();
-    expect(host.agents.get('dsh')?.command).toBe('NO_COLOR=1 dsh --profile headless');
+    expect(host.agents.get('claude')?.command).toBe('claude-agent-acp');
 
-    const inventory = host.refreshInventory();
+    const inventory = await host.refreshInventory();
 
-    expect(host.agents.get('dsh')?.command).toBe('dsh --profile other');
-    expect(inventory.find(agent => agent.id === 'dsh')).toMatchObject({
-      label: 'DSH 2',
-      command: 'dsh --profile other',
+    expect(host.agents.get('claude')?.command).toBe('claude-agent-acp --other');
+    expect(inventory.find(agent => agent.id === 'claude')).toMatchObject({
+      label: 'Claude 2',
+      command: 'claude-agent-acp --other',
     });
+  });
+
+  it('reads an added row on the next scan and seats it like any other', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'rivus-room-web-'));
+    const store = SqliteRoomStore.open(root);
+    const host = new RoomLabHost(store, probeReadyBinding);
+    await host.addAgent({ id: 'gemini', label: 'Gemini', role: '调研', command: 'gemini-acp' });
+
+    // The new row is the next seat at the end of the desk, on a drawn hue.
+    expect(host.agents.get('gemini')).toMatchObject({ role: '调研', command: 'gemini-acp' });
+    const added = store.db.prepare('SELECT color, position, system_prompt FROM agents WHERE id = ?')
+      .get('gemini') as unknown as { color: number; position: number; system_prompt: string };
+    expect(added.color).toBeGreaterThanOrEqual(1);
+    expect(added.color).toBeLessThanOrEqual(5);
+    expect(added.position).toBe(3);
+    expect(added.system_prompt).toBe('');
+
+    const desk = await host.agentDesk();
+    expect(desk.agents.find(agent => agent.id === 'gemini')).toMatchObject({
+      label: 'Gemini',
+      availability: 'ready',
+      command: 'gemini-acp',
+    });
+  });
+
+  it('refuses an add-agent row whose id is off the mention grammar or already seated', async () => {
+    const host = new RoomLabHost(SqliteRoomStore.open(mkdtempSync(join(tmpdir(), 'rivus-room-web-'))), probeReadyBinding);
+    await expect(host.addAgent({ id: 'Gemini', label: 'x', command: 'gemini-acp' }))
+      .rejects.toThrow(/must match/);
+    await expect(host.addAgent({ id: '1gemini', label: 'x', command: 'gemini-acp' }))
+      .rejects.toThrow(/must match/);
+    await expect(host.addAgent({ id: 'gemini_x', label: 'x', command: 'gemini-acp' }))
+      .rejects.toThrow(/must match/);
+    await expect(host.addAgent({ id: 'claude', label: 'x', command: 'gemini-acp' }))
+      .rejects.toThrow(/already exists/);
+    await expect(host.addAgent({ id: 'gemini', label: ' ', command: 'gemini-acp' }))
+      .rejects.toThrow(/needs a label/);
+    await expect(host.addAgent({ id: 'gemini', label: 'Gemini', command: ' ' }))
+      .rejects.toThrow(/needs a command/);
   });
 
   it('lists which rooms an agent is seated in', async () => {
     const root = mkdtempSync(join(tmpdir(), 'rivus-room-web-'));
-    const host = new RoomLabHost(SqliteRoomStore.open(root), { listAgents: runnableInventory });
+    const host = new RoomLabHost(SqliteRoomStore.open(root), probeReadyBinding);
     const created = await host.create({ title: 'Q3 定价方案', memberIds: ['codex'] });
-    const desk = host.agentDesk();
+    const desk = await host.agentDesk();
     expect(desk.agents.find(agent => agent.id === 'codex')?.seatedIn).toEqual([
       { id: created.roomId, title: 'Q3 定价方案' },
     ]);
     expect(desk.agents.find(agent => agent.id === 'claude')?.seatedIn).toEqual([]);
+    // A ready probe plus a seat is 已入座, not 可入座.
+    expect(desk.agents.find(agent => agent.id === 'codex')?.availability).toBe('seated');
+    expect(desk.agents.find(agent => agent.id === 'claude')?.availability).toBe('ready');
   });
 
   it('keeps a room\'s stored crew when one of its agents has no row', async () => {
     const root = mkdtempSync(join(tmpdir(), 'rivus-room-web-'));
-    const host = new RoomLabHost(SqliteRoomStore.open(root), { listAgents: runnableInventory });
-    const crew = await host.create({ title: '两人房', memberIds: ['codex', 'dsh'] });
+    const host = new RoomLabHost(SqliteRoomStore.open(root), probeReadyBinding);
+    const crew = await host.create({ title: '两人房', memberIds: ['codex', 'claude'] });
     const other = await host.create({ title: '另一间', memberIds: ['codex'] });
 
     // A row removed outside this process: `room_members` has no foreign key to
     // `agents`, so the seating is left behind and only the catalog filters it.
     const db = new DatabaseSync(join(root, 'rooms.sqlite'));
-    db.prepare('DELETE FROM agents WHERE id = ?').run('dsh');
+    db.prepare('DELETE FROM agents WHERE id = ?').run('claude');
     db.close();
 
     // Switching rooms is enough to write the catalog back. `other` was created
     // last, so it is already the last opened; opening `crew` is the switch.
-    const reopened = new RoomLabHost(SqliteRoomStore.open(root), { listAgents: runnableInventory });
+    const reopened = new RoomLabHost(SqliteRoomStore.open(root), probeReadyBinding);
     expect(reopened.lastOpened()?.id).toBe(other.roomId);
     await reopened.snapshot(crew.roomId);
 
@@ -165,20 +212,20 @@ describe('sqlite Room persistence', () => {
     ).all(crew.roomId) as unknown as { agent_id: string }[];
     check.close();
 
-    expect(seated.map(row => row.agent_id)).toEqual(['codex', 'dsh']);
+    expect(seated.map(row => row.agent_id)).toEqual(['codex', 'claude']);
   });
 
   it('seats a room again once the missing agent row comes back', async () => {
     const root = mkdtempSync(join(tmpdir(), 'rivus-room-web-'));
-    const host = new RoomLabHost(SqliteRoomStore.open(root), { listAgents: runnableInventory });
-    const crew = await host.create({ title: '两人房', memberIds: ['codex', 'dsh'] });
+    const host = new RoomLabHost(SqliteRoomStore.open(root), probeReadyBinding);
+    const crew = await host.create({ title: '两人房', memberIds: ['codex', 'claude'] });
 
     const db = new DatabaseSync(join(root, 'rooms.sqlite'));
-    const row = db.prepare('SELECT * FROM agents WHERE id = ?').get('dsh') as unknown as Record<string, unknown>;
-    db.prepare('DELETE FROM agents WHERE id = ?').run('dsh');
+    const row = db.prepare('SELECT * FROM agents WHERE id = ?').get('claude') as unknown as Record<string, unknown>;
+    db.prepare('DELETE FROM agents WHERE id = ?').run('claude');
     db.close();
 
-    const without = new RoomLabHost(SqliteRoomStore.open(root), { listAgents: runnableInventory });
+    const without = new RoomLabHost(SqliteRoomStore.open(root), probeReadyBinding);
     expect((await without.snapshot(crew.roomId)).activeAgentIds).toEqual(['codex']);
 
     const restore = new DatabaseSync(join(root, 'rooms.sqlite'));
@@ -192,8 +239,8 @@ describe('sqlite Room persistence', () => {
     );
     restore.close();
 
-    const back = new RoomLabHost(SqliteRoomStore.open(root), { listAgents: runnableInventory });
-    expect((await back.snapshot(crew.roomId)).activeAgentIds).toEqual(['codex', 'dsh']);
+    const back = new RoomLabHost(SqliteRoomStore.open(root), probeReadyBinding);
+    expect((await back.snapshot(crew.roomId)).activeAgentIds).toEqual(['codex', 'claude']);
   });
 
   it('sets connection pragmas when opening a library', () => {
@@ -236,7 +283,7 @@ describe('sqlite Room persistence', () => {
       countOff: { runId: 'COUNT-001', status: 'completed' },
     }));
     const store = SqliteRoomStore.open(root);
-    const host = new RoomLabHost(store, { listAgents: runnableInventory });
+    const host = new RoomLabHost(store, probeReadyBinding);
     const snapshot = await host.snapshot('r_aaaaaaaaaa');
     expect(snapshot.title).toBe('Q3 定价方案');
     expect(snapshot.events[0]).toMatchObject({ body: '旧文件里的一句', messageId: 'legacy:1' });

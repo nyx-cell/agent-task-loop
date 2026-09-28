@@ -84,7 +84,7 @@ describe('runMigrations', () => {
     expect(versions(db)).toEqual([1, 2, 3, 4, 5, 6, 7]);
     expect(tables(db)).toContain('agents');
     const seeded = db.prepare('SELECT id, role FROM agents ORDER BY position').all() as unknown as Array<{ id: string; role: string }>;
-    expect(seeded.map(row => row.id)).toEqual(['claude', 'codex', 'opencode', 'dsh', 'inherited-one']);
+    expect(seeded.map(row => row.id)).toEqual(['claude', 'codex', 'opencode', 'inherited-one']);
     expect(seeded.at(-1)?.role).toBe('成员');
     // The room it was seated in is untouched.
     expect(db.prepare('SELECT agent_id FROM room_members').all()).toEqual([{ agent_id: 'inherited-one' }]);
@@ -98,7 +98,7 @@ describe('runMigrations', () => {
       db.exec(`
         INSERT INTO agent_system_prompts (agent_id, prompt, updated_at) VALUES
           ('codex', '先给结论，再给依据。', '2026-09-18T00:00:00.000Z'),
-          ('dsh', '   ', '2026-09-18T00:00:00.000Z');
+          ('opencode', '   ', '2026-09-18T00:00:00.000Z');
       `);
     });
     const db = new DatabaseSync(file);
@@ -112,7 +112,7 @@ describe('runMigrations', () => {
     // What was saved is kept, verbatim.
     expect(promptOf.get('codex')).toBe('先给结论，再给依据。');
     // Whitespace was never an instruction, so that row starts from the default.
-    expect(promptOf.get('dsh')).toBe(DEFAULT_AGENT_SYSTEM_PROMPT);
+    expect(promptOf.get('opencode')).toBe(DEFAULT_AGENT_SYSTEM_PROMPT);
     expect(promptOf.get('claude')).toBe(DEFAULT_AGENT_SYSTEM_PROMPT);
     expect([...promptOf.values()].every(prompt => prompt.length > 0)).toBe(true);
     expect(tables(db)).not.toContain('agent_system_prompts');

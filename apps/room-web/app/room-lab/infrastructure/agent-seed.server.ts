@@ -2,10 +2,12 @@ import { randomInt } from 'node:crypto';
 import { AGENT_COLOR_COUNT } from '../domain/agent-registry';
 
 /**
- * The rows migration 2 writes: the agents this project ships a command for, plus
- * any id an existing library already seats or holds a prompt for, so a crew that
- * predates the table keeps answering. An inherited row's command is the id run
- * as a headless CLI — enough until the person edits it.
+ * The rows migration 2 writes: the candidate catalog (RFC 0015) — the ACP
+ * adapters this project knows how to start, claude and codex shipped as its own
+ * dependencies and opencode run from the person's install — plus any id an
+ * existing library already seats or holds a prompt for, so a crew that predates
+ * the table keeps answering. An inherited row's command is the id run as a
+ * headless CLI — enough until the person edits it.
  *
  * Colour is drawn once and stored, so a member's hue is a fact about its row
  * rather than a function of seating order.
@@ -28,30 +30,29 @@ export interface AgentSeedRow extends AgentSeed {
   createdAt: string;
 }
 
+/**
+ * The candidate catalog: the command line is the ACP binding the probe starts,
+ * not a headless CLI invocation. `claude-agent-acp` and `codex-acp` are this
+ * package's own dependencies; `opencode acp` is the person's own install.
+ */
 export const DEFAULT_AGENT_SEEDS: readonly AgentSeed[] = [
   {
     id: 'claude',
     label: 'Claude',
     role: '审核',
-    command: 'claude -p --safe-mode --restricted --no-session-persistence --output-format text',
+    command: 'claude-agent-acp',
   },
   {
     id: 'codex',
     label: 'Codex',
     role: '实施',
-    command: 'codex exec --ignore-user-config --ephemeral --sandbox read-only --skip-git-repo-check --ignore-rules --color never',
+    command: 'codex-acp',
   },
   {
     id: 'opencode',
     label: 'OpenCode',
     role: '搭建',
-    command: 'NO_COLOR=1 opencode run --pure --model opencode/ling-3.0-flash-fin-free',
-  },
-  {
-    id: 'dsh',
-    label: 'DSH',
-    role: '分析',
-    command: 'NO_COLOR=1 dsh --profile headless',
+    command: 'opencode acp',
   },
 ];
 

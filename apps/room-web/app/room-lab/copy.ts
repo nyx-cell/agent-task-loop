@@ -44,6 +44,7 @@ export const copy = {
     createRoom: '创建房间',
     create: '创建',
     rescan: '重新扫描',
+    addAgent: '新增',
     save: '保存',
     backToRoom: '返回房间',
     backToRooms: '返回房间列表',
@@ -55,10 +56,12 @@ export const copy = {
     add: (name: string) => `加入 ${name}`,
   },
 
-  /** A member's CLI, keyed by what one shell lookup can answer. */
+  /** A member's row on the desk, keyed by what one probe can answer. */
   availability: {
-    runnable: '可运行',
-    missing: '未安装',
+    missing: '缺失',
+    'needs-login': '待登录',
+    ready: '可入座',
+    seated: '已入座',
   } satisfies Record<RoomAgentAvailability, string>,
 
   label: {
@@ -80,6 +83,15 @@ export const copy = {
     humanMark: '我',
     everyone: '所有在场成员',
     localAgents: '本机智能体',
+    addAgent: '新增智能体',
+    agentId: 'ID',
+    agentIdPlaceholder: '例如：gemini',
+    agentLabel: '名称',
+    agentLabelPlaceholder: '例如：Gemini',
+    agentCommand: '命令',
+    agentCommandPlaceholder: '例如：opencode acp',
+    agentRole: '角色',
+    agentRolePlaceholder: '例如：调研',
     systemPrompt: (name: string) => `${name} 的系统提示`,
     roomsIn: '所在房间：',
     theme: (choice: string) => `主题：${choice}`,
@@ -122,9 +134,9 @@ export const copy = {
     promptSaved: '保存在本机，所有房间共用。',
     createTitle: '新建房间',
     createIntro: '用要做的事命名房间。成员收到消息后各自决定何时回话。',
-    agentsLink: '查看本机已安装的 agent，为每位设置系统提示。',
-    agentsIntro: (total: number, runnable: number) => `本机 ${total} 位智能体，${runnable} 位可运行。系统提示会在房间调用时随请求带上。`,
-    noCommand: '未在 PATH 中找到命令',
+    agentsLink: '查看并新增本机的 agent，为每位设置系统提示。',
+    agentsIntro: (total: number, seatable: number) => `本机 ${total} 位智能体，${seatable} 位可入座。系统提示会在房间调用时随请求带上。`,
+    agentIdPattern: 'ID 需以小写字母开头，只能含小写字母、数字和连字符。',
     inNoRoom: '未加入任何房间',
     roomUnavailable: '无法打开这间房',
     serviceUnavailable: '房间服务不可用',

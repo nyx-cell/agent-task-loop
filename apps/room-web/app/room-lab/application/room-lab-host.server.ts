@@ -6,33 +6,34 @@ import {
   nodeIdentity,
   nodeLiveness,
   runtimeKey,
+  type AgentBinding,
+  type AgentProbe,
   type Harness,
 } from '@rivus/agent-orchestration';
 import { AcpConnector, ToolServer } from '@rivus/agent-orchestration/acp';
 import { RoomService, RoomInputError } from './room-service.server';
 import type { TurnLog } from './ports';
-import {
-  listRoomAgentInventory,
-  runnableInventory,
-} from './room-agent-inventory.server';
 import { createRoomRecordInput, defaultWorkRoot, nowIso } from '../infrastructure/room-home.server';
 import { SqliteRoomStore } from '../infrastructure/sqlite-room-store.server';
 import { SqliteAgentRegistry } from '../infrastructure/sqlite-agent-registry.server';
 import { SqliteLeaseStore } from '../infrastructure/sqlite-lease-store.server';
 import { SqliteTurnLog } from '../infrastructure/sqlite-turn-log.server';
+import { INHERITED_AGENT_ROLE } from '../infrastructure/agent-seed.server';
 import { RoomCatalog, RoomCatalogInvariantError, type RoomWakeMode } from '../domain/room-catalog';
-import type { AgentDefinition, AgentRegistry, RoomLabAgentId } from '../domain/agent-registry';
-import type {
-  AgentDeskView,
-  RoomAgentInventoryItem,
-  RoomCatalogItemView,
-  RoomLabAction,
-  RoomLabState,
-  RoomView,
+import { isAgentId, type AgentRegistry, type RoomLabAgentId } from '../domain/agent-registry';
+import {
+  deriveAgentAvailability,
+  type AgentDeskView,
+  type RoomAgentProbeItem,
+  type RoomCatalogItemView,
+  type RoomLabAction,
+  type RoomLabState,
+  type RoomView,
 } from '../read-model';
 
 export interface RoomLabHostBindings {
-  listAgents?: (agents: readonly AgentDefinition[]) => RoomAgentInventoryItem[];
+  /** Test seam: answer a row's probe without starting an ACP process. */
+  probe?: (binding: AgentBinding) => Promise<AgentProbe>;
 }
 
 /**
@@ -47,11 +48,13 @@ export class RoomLabHost {
   private readonly store: SqliteRoomStore;
   private readonly services = new Map<string, RoomService>();
   private catalog: RoomCatalog;
-  private inventoryCache?: RoomAgentInventoryItem[];
+  private inventoryCache?: RoomAgentProbeItem[];
 
   /** The one roster the desk, the routes and the views read members from. */
   readonly agents: AgentRegistry;
 
+  private readonly connector: AcpConnector;
+  private readonly probeRow: (binding: AgentBinding) => Promise<AgentProbe>;
   private readonly controlRegistry: SqliteAgentRegistry;
   private readonly lease: LeaseManager;
   private readonly runtime: AgentRuntime;
@@ -65,6 +68,8 @@ export class RoomLabHost {
     this.store = store;
     this.agents = store.agents;
     this.catalog = store.loadCatalog();
+    this.connector = new AcpConnector();
+    this.probeRow = bindings.probe ?? (binding => this.connector.probe(binding));
     this.controlRegistry = new SqliteAgentRegistry(store.db);
     this.lease = new LeaseManager({
       store: new SqliteLeaseStore(store.db),
@@ -74,7 +79,7 @@ export class RoomLabHost {
       liveness: nodeLiveness,
     });
     this.runtime = new AgentRuntime({
-      connector: new AcpConnector(),
+      connector: this.connector,
       registry: this.controlRegistry,
       lease: this.lease,
     });
@@ -106,20 +111,57 @@ export class RoomLabHost {
     return this.catalog.lastOpened();
   }
 
-  inventory(): RoomAgentInventoryItem[] {
+  /**
+   * The desk's rows as the last scan left them. The first call probes every
+   * row — one ACP process per row, asked `initialize` plus a trial
+   * `session/new` — and the answers are cached until 重新扫描.
+   */
+  async inventory(): Promise<RoomAgentProbeItem[]> {
+    if (this.inventoryCache) return this.inventoryCache;
     const agents = this.agents.list();
-    return this.inventoryCache ??= this.bindings.listAgents?.(agents)
-      ?? listRoomAgentInventory(agents);
+    const rooms = this.list();
+    const items = await Promise.all(agents.map(async agent => {
+      const probe = await this.probeRow({ command: agent.command });
+      return {
+        id: agent.id,
+        label: agent.label,
+        role: agent.role,
+        color: agent.color,
+        command: agent.command,
+        availability: deriveAgentAvailability({
+          probe: probe.status,
+          seatedIn: rooms.filter(room => room.memberIds.includes(agent.id)).length,
+        }),
+      };
+    }));
+    return this.inventoryCache = items;
   }
 
   /**
    * What 重新扫描 does: re-read the table, then probe it again. Both halves are
-   * needed — a row edited outside this process is as much a change as a CLI
-   * that has since been installed.
+   * needed — a row edited outside this process is as much a change as an
+   * adapter that has since been installed or logged into.
    */
-  refreshInventory(): RoomAgentInventoryItem[] {
+  async refreshInventory(): Promise<RoomAgentProbeItem[]> {
     this.reloadAgents();
     return this.inventory();
+  }
+
+  /**
+   * Writes the desk's add-agent form to a new row and re-reads the table, so
+   * the next scan answers for it. The id is the word after `@`, which is why it
+   * must match the mention grammar; the role is the endpoint's own column.
+   */
+  async addAgent(input: { id: string; label: string; role?: string; command: string }): Promise<void> {
+    const id = input.id.trim();
+    if (!isAgentId(id)) throw new RoomInputError('An agent id must match ^[a-z][a-z0-9-]*$');
+    if (this.agents.has(id)) throw new RoomInputError(`Agent ${id} already exists`);
+    const label = input.label.trim();
+    if (!label) throw new RoomInputError('An agent needs a label');
+    const command = input.command.trim();
+    if (!command) throw new RoomInputError('An agent needs a command to probe');
+    this.store.addAgent({ id, label, role: input.role?.trim() || INHERITED_AGENT_ROLE, command });
+    this.reloadAgents();
   }
 
   /**
@@ -129,16 +171,16 @@ export class RoomLabHost {
   saveSystemPrompt(agentId: RoomLabAgentId, prompt: string): void {
     this.store.saveSystemPrompt(agentId, prompt);
     // Re-read the rows, but keep the probe: a prompt has nothing to do with
-    // whether a command resolves, and re-probing costs a login shell.
+    // whether the adapter starts, and re-probing costs an ACP process.
     this.agents.reload();
   }
 
-  agentDesk(): AgentDeskView {
+  async agentDesk(): Promise<AgentDeskView> {
     const rooms = this.list();
     const lastOpenedId = this.lastOpened()?.id;
     return {
       ...(lastOpenedId === undefined ? {} : { lastOpenedId }),
-      agents: this.inventory().map(agent => ({
+      agents: (await this.inventory()).map(agent => ({
         ...agent,
         seatedIn: rooms
           .filter(room => room.memberIds.includes(agent.id))
@@ -167,24 +209,24 @@ export class RoomLabHost {
       this.store.saveLastOpened(this.catalog.touch(roomId, nowIso()));
     }
     const service = this.open(roomId);
-    return this.decorate(await service.snapshot(), roomId);
+    return await this.decorate(await service.snapshot(), roomId);
   }
 
   async act(roomId: string, input: Exclude<RoomLabAction, { action: 'create' }>): Promise<RoomLabState> {
     const service = this.open(roomId);
     switch (input.action) {
       case 'message':
-        return this.decorate(await service.sendMessage(input.body, input.clientMessageId), roomId);
+        return await this.decorate(await service.sendMessage(input.body, input.clientMessageId), roomId);
       case 'compose': {
         this.setMembers(roomId, input.agentIds);
-        return this.decorate(await service.snapshot(), roomId);
+        return await this.decorate(await service.snapshot(), roomId);
       }
       case 'settings': {
         this.setSettings(roomId, input);
-        return this.decorate(await service.snapshot(), roomId);
+        return await this.decorate(await service.snapshot(), roomId);
       }
       case 'reset':
-        return this.decorate(await service.reset(), roomId);
+        return await this.decorate(await service.reset(), roomId);
       default:
         throw new Error('Unknown Room action');
     }
@@ -244,9 +286,9 @@ export class RoomLabHost {
     return 'http';
   }
 
-  decorate(state: RoomView, roomId: string): RoomLabState {
+  async decorate(state: RoomView, roomId: string): Promise<RoomLabState> {
     const record = this.catalog.get(roomId);
-    const inventory = new Map(this.inventory().map(agent => [agent.id, agent]));
+    const inventory = new Map((await this.inventory()).map(agent => [agent.id, agent]));
     return {
       ...state,
       roomId,
@@ -283,5 +325,5 @@ export class RoomLabHost {
   }
 }
 
-export { RoomCatalogInvariantError, runnableInventory };
+export { RoomCatalogInvariantError };
 export { RoomInputError };

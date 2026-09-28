@@ -27,13 +27,13 @@ describe('SqliteAgentRegistry', () => {
 
     const agents = await registry.list();
 
-    expect(agents.map(row => row.id)).toEqual(['claude', 'codex', 'opencode', 'dsh']);
+    expect(agents.map(row => row.id)).toEqual(['claude', 'codex', 'opencode']);
     // The port's shape and nothing else: no role, colour or position on it.
     expect(Object.keys(agents[0]!).sort()).toEqual(['binding', 'id', 'label', 'systemPrompt']);
     expect(agents[0]).toMatchObject({
       id: 'claude',
       label: 'Claude',
-      binding: { command: 'claude -p --safe-mode --restricted --no-session-persistence --output-format text' },
+      binding: { command: 'claude-agent-acp' },
       systemPrompt: expect.any(String),
     });
   });
@@ -114,11 +114,11 @@ describe('SqliteAgentRegistry', () => {
     const store = SqliteRoomStore.memory();
     const registry = new SqliteAgentRegistry(store.db);
 
-    await registry.remove('dsh');
+    await registry.remove('opencode');
 
-    expect(await registry.get('dsh')).toBeUndefined();
-    expect((await registry.list()).map(row => row.id)).toEqual(['claude', 'codex', 'opencode']);
+    expect(await registry.get('opencode')).toBeUndefined();
+    expect((await registry.list()).map(row => row.id)).toEqual(['claude', 'codex']);
     expect(store.db.prepare('SELECT COUNT(*) AS n FROM agents').get())
-      .toEqual({ n: 3 });
+      .toEqual({ n: 2 });
   });
 });

@@ -14,30 +14,18 @@ The room's own prompt carries facts only — who you are, how many of you there
 are, what has been said — so how a member answers is its row's business, and
 the agents page edits it.
 
-The first time this app opens a library it seeds rows for the
-four commands it ships with — `claude`, `codex`, `opencode`, `dsh` — plus one
-row for every agent id an older library already seats.
+The first time this app opens a library it seeds rows for the three ACP
+candidates in its catalog — `claude-agent-acp`, `codex-acp` (both shipped as
+this package's dependencies) and `opencode acp` (the person's own install) —
+plus one row for every agent id an older library already seats.
 
-Until the agents page can add one, add an agent with `sqlite3`:
-
-```sql
-INSERT INTO agents (id, label, role, command, color, position, created_at, system_prompt)
-VALUES (
-  'gemini',                              -- also the word after @, ^[a-z][a-z0-9-]*$
-  'Gemini',                              -- display name
-  '调研',                                 -- role word, free text
-  'gemini --prompt-interactive false',   -- run as: zsh -lic '<command> "$1"'
-  2,                                     -- 1..5, maps to --chart-1..5
-  4,                                     -- default seating order
-  '2026-09-20T00:00:00.000Z',
-  '用中文给出具体、简洁的回答。'              -- prepended to every turn; '' adds nothing
-);
-```
-
-Then press 重新扫描 on the agents page, which re-reads the table and re-probes
-each command. A member's availability is one `whence -w` lookup in the same
-interactive login shell the runner uses, so an alias or a shell function counts
-as installed exactly when it will actually run; the alias body is never read.
+Add another agent with the form at the bottom of the agents page: an id that
+is also the word after `@` (`^[a-z][a-z0-9-]*$`), a display label, the ACP
+command line run through the person's login shell, and a role word. Then press
+重新扫描, which re-reads the table and runs `probe` on every row — `initialize`
+plus a trial `session/new`, so the answer is whether the adapter starts, whether
+it is logged in, and whether it can open a session. A row shows one of four
+states: 缺失, 待登录, 可入座, 已入座.
 
 ## Run
 

@@ -1,23 +1,28 @@
 import { useState } from 'react';
 import { Form, Link, useNavigation } from 'react-router';
-import type { AgentDeskView, RoomLabAgentId } from '../read-model';
+import { isAgentId, type RoomLabAgentId } from '../domain/agent-registry';
+import type { AgentDeskView } from '../read-model';
 import { AgentMark, Wordmark } from './AgentMark';
 import { Badge } from '~/components/ui/badge';
 import { Button } from '~/components/ui/button';
+import { Input } from '~/components/ui/input';
 import { Textarea } from '~/components/ui/textarea';
 import { sectionLabel } from './ui';
 import { availabilityVariant } from './agent-status';
 import { copy } from '../copy';
 
-export function AgentDesk({ desk }: { desk: AgentDeskView }) {
+/** A row the desk can seat: the probe opened a session, seated or not yet. */
+const SEATABLE = new Set(['ready', 'seated']);
+
+export function AgentDesk({ desk, error }: { desk: AgentDeskView; error?: string }) {
   const backTo = desk.lastOpenedId ? `/room/${desk.lastOpenedId}` : '/room';
   const navigation = useNavigation();
   const busy = navigation.state !== 'idle';
-  const preferred = desk.agents.find(agent => agent.availability === 'runnable')?.id
+  const preferred = desk.agents.find(agent => SEATABLE.has(agent.availability))?.id
     ?? desk.agents[0]?.id;
   const [selected, setSelected] = useState<RoomLabAgentId | undefined>(preferred);
   const current = desk.agents.find(agent => agent.id === selected) ?? desk.agents[0];
-  const runnable = desk.agents.filter(agent => agent.availability === 'runnable').length;
+  const seatable = desk.agents.filter(agent => SEATABLE.has(agent.availability)).length;
   return (
     <main className="min-h-dvh bg-background px-4 py-8 font-sans text-foreground">
       <div className="mx-auto w-[min(760px,100%)]">
@@ -29,7 +34,7 @@ export function AgentDesk({ desk }: { desk: AgentDeskView }) {
             <div>
               <h1 className="m-0 text-2xl font-bold leading-tight tracking-[-0.02em]">{copy.label.agents}</h1>
               <p className="mt-1 mb-0 text-sm leading-snug text-foreground/75">
-                {copy.say.agentsIntro(desk.agents.length, runnable)}
+                {copy.say.agentsIntro(desk.agents.length, seatable)}
               </p>
             </div>
             <div className="flex gap-2">
@@ -69,7 +74,7 @@ export function AgentDesk({ desk }: { desk: AgentDeskView }) {
                         </div>
                         <p className="m-0 mt-0.5 text-xs text-muted-foreground">{agent.role}</p>
                         <p className="m-0 mt-1 font-mono text-xs leading-relaxed text-foreground/75 [overflow-wrap:anywhere]">
-                          {agent.command ?? copy.say.noCommand}
+                          {agent.command}
                         </p>
                         {agent.seatedIn.length > 0 ? (
                           <p className="m-0 mt-1.5 text-xs text-muted-foreground">
@@ -114,8 +119,61 @@ export function AgentDesk({ desk }: { desk: AgentDeskView }) {
               </Form>
             )}
           </div>
+          <AddAgentForm busy={busy} error={error} />
         </section>
       </div>
     </main>
+  );
+}
+
+/**
+ * One row the catalog has never heard of is one more row (RFC 0015): the form
+ * writes it, the next scan answers for it. The id is the word after `@`, so the
+ * form refuses anything off the mention grammar before the server has to.
+ */
+function AddAgentForm({ busy, error }: { busy: boolean; error?: string }) {
+  const [idRejected, setIdRejected] = useState(false);
+  return (
+    <Form
+      method="post"
+      className="flex flex-col gap-3 border-t border-border px-[18px] py-4"
+      onSubmit={event => {
+        const id = new FormData(event.currentTarget).get('id');
+        const wellFormed = typeof id === 'string' && isAgentId(id);
+        setIdRejected(!wellFormed);
+        if (!wellFormed) event.preventDefault();
+      }}
+    >
+      <input type="hidden" name="intent" value="add-agent" />
+      <h2 className={`${sectionLabel} m-0`}>{copy.label.addAgent}</h2>
+      <div className="grid grid-cols-2 gap-3 max-[720px]:grid-cols-1">
+        <label className="flex flex-col gap-1.5 text-sm">
+          {copy.label.agentId}
+          <Input name="id" required maxLength={40} pattern="[a-z][a-z0-9-]*"
+            placeholder={copy.label.agentIdPlaceholder} disabled={busy} />
+        </label>
+        <label className="flex flex-col gap-1.5 text-sm">
+          {copy.label.agentLabel}
+          <Input name="label" required maxLength={40}
+            placeholder={copy.label.agentLabelPlaceholder} disabled={busy} />
+        </label>
+        <label className="flex flex-col gap-1.5 text-sm">
+          {copy.label.agentCommand}
+          <Input name="command" required maxLength={400} className="font-mono"
+            placeholder={copy.label.agentCommandPlaceholder} disabled={busy} />
+        </label>
+        <label className="flex flex-col gap-1.5 text-sm">
+          {copy.label.agentRole}
+          <Input name="role" maxLength={40}
+            placeholder={copy.label.agentRolePlaceholder} disabled={busy} />
+        </label>
+      </div>
+      <div className="flex items-center justify-between gap-3">
+        <p data-error className="m-0 min-h-4 text-xs text-destructive" role={idRejected || error ? 'alert' : undefined}>
+          {idRejected ? copy.say.agentIdPattern : error ?? ''}
+        </p>
+        <Button type="submit" className="self-end" disabled={busy}>{copy.action.addAgent}</Button>
+      </div>
+    </Form>
   );
 }

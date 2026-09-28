@@ -7,8 +7,13 @@ import { action, loader } from '../../routes/room.$roomId';
 import { action as agentsAction } from '../../routes/room.agents';
 import { isLocalOrigin } from '../infrastructure/local-guard.server';
 import { getRoomLabHost } from '../composition.server';
-import { RoomLabHost, runnableInventory } from './room-lab-host.server';
+import { RoomLabHost } from './room-lab-host.server';
 import { SqliteRoomStore } from '../infrastructure/sqlite-room-store.server';
+
+/** Every row answers its probe ready, so the tests never start an ACP process. */
+const probeReadyBinding = {
+  probe: () => Promise.resolve({ status: 'ready' as const, capabilities: {} }),
+};
 
 describe('Room action boundary', () => {
   afterEach(() => {
@@ -65,9 +70,7 @@ describe('Room action boundary', () => {
 
   it('rejects an empty Room composition at the domain boundary', async () => {
     process.env.RIVUS_ROOM_HOME = mkdtempSync(join(tmpdir(), 'rivus-room-'));
-    globalThis.__rivusRoomLabHost = new RoomLabHost(SqliteRoomStore.open(process.env.RIVUS_ROOM_HOME), {
-      listAgents: runnableInventory,
-    });
+    globalThis.__rivusRoomLabHost = new RoomLabHost(SqliteRoomStore.open(process.env.RIVUS_ROOM_HOME), probeReadyBinding);
     const created = await getRoomLabHost().create({ title: '边界测试' });
     const response = asResponse(await action(args(new Request(`http://127.0.0.1:3210/room/${created.roomId}`, {
       method: 'POST',

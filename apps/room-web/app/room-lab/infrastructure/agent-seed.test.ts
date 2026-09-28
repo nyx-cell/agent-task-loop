@@ -15,10 +15,16 @@ describe('agents migration', () => {
     const store = SqliteRoomStore.open(root());
     const agents = store.agents.list();
 
-    expect(agents.map(agent => agent.id)).toEqual(['claude', 'codex', 'opencode', 'dsh']);
-    expect(agents.map(agent => agent.position)).toEqual([0, 1, 2, 3]);
+    expect(agents.map(agent => agent.id)).toEqual(['claude', 'codex', 'opencode']);
+    expect(agents.map(agent => agent.position)).toEqual([0, 1, 2]);
     expect(agents.every(agent => agent.color >= 1 && agent.color <= 5)).toBe(true);
-    expect(store.agents.get('opencode')?.command).toContain('NO_COLOR=1 opencode run');
+    // The seeds are the candidate catalog: the command line is the ACP binding
+    // the probe starts, not a headless CLI invocation.
+    expect(store.agents.list().map(agent => agent.command)).toEqual([
+      'claude-agent-acp',
+      'codex-acp',
+      'opencode acp',
+    ]);
   });
 
   it('adds a row for every id an existing library already seats', () => {
@@ -42,7 +48,7 @@ describe('agents migration', () => {
     const agents = store.agents.list();
 
     expect(agents.map(agent => agent.id)).toEqual([
-      'claude', 'codex', 'opencode', 'dsh', 'inherited-one', 'inherited-two',
+      'claude', 'codex', 'opencode', 'inherited-one', 'inherited-two',
     ]);
     expect(store.agents.get('inherited-one')).toMatchObject({
       label: 'inherited-one',
@@ -56,19 +62,22 @@ describe('agents migration', () => {
   it('does not seed twice, and leaves an edited row alone', () => {
     const home = root();
     const first = SqliteRoomStore.open(home);
-    first.db.prepare('UPDATE agents SET command = ? WHERE id = ?').run('claude --edited', 'claude');
-    first.db.prepare('DELETE FROM agents WHERE id = ?').run('dsh');
+    first.db.prepare('UPDATE agents SET command = ? WHERE id = ?').run('claude-agent-acp --edited', 'claude');
+    first.db.prepare('DELETE FROM agents WHERE id = ?').run('codex');
 
     const reopened = SqliteRoomStore.open(home);
-    expect(reopened.agents.get('claude')?.command).toBe('claude --edited');
-    expect(reopened.agents.has('dsh')).toBe(false);
+    expect(reopened.agents.get('claude')?.command).toBe('claude-agent-acp --edited');
+    expect(reopened.agents.has('codex')).toBe(false);
+    // The candidates are seeded once: a deleted row stays deleted, and no
+    // second opening grows the desk.
+    expect(reopened.agents.list()).toHaveLength(2);
   });
 
   it('numbers positions in insertion order and draws every colour from 1…5', () => {
     const rows = buildAgentSeedRows(['legacy'], '2026-09-18T00:00:00.000Z', () => 2);
 
-    expect(rows.map(row => row.position)).toEqual([0, 1, 2, 3, 4]);
-    expect(rows.map(row => row.color)).toEqual([2, 2, 2, 2, 2]);
+    expect(rows.map(row => row.position)).toEqual([0, 1, 2, 3]);
+    expect(rows.map(row => row.color)).toEqual([2, 2, 2, 2]);
     expect(rows.at(-1)).toMatchObject({ id: 'legacy', role: '成员' });
     // An id the project already ships is not seeded a second time.
     expect(buildAgentSeedRows(['codex', 'codex'], '2026-09-18T00:00:00.000Z'))

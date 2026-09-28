@@ -36,17 +36,36 @@ export interface RoomLabEventView {
   failed?: boolean;
 }
 
-/** One shell lookup either resolves a member's command or it does not. */
-export type RoomAgentAvailability = 'runnable' | 'missing';
+/**
+ * What one probe of a row's command answers (RFC 0015): the process did not
+ * start, it started but must be logged into, or it opened a session.
+ */
+export type AgentProbeStatus = 'missing' | 'needs-login' | 'ready';
 
-export interface RoomAgentInventoryItem {
+/**
+ * A row's state on the desk: the probe's answer, or — when the probe is ready
+ * and the row already sits in a room — 已入座.
+ */
+export type RoomAgentAvailability = AgentProbeStatus | 'seated';
+
+export function deriveAgentAvailability(input: {
+  probe: AgentProbeStatus;
+  /** How many rooms currently seat this agent. */
+  seatedIn: number;
+}): RoomAgentAvailability {
+  if (input.probe === 'ready' && input.seatedIn > 0) return 'seated';
+  return input.probe;
+}
+
+/** One row of the desk as a scan leaves it. */
+export interface RoomAgentProbeItem {
   id: RoomLabAgentId;
   label: string;
   role: string;
   /** 1…5, the identity hue stored on the agent's row. */
   color: number;
   availability: RoomAgentAvailability;
-  command?: string;
+  command: string;
 }
 
 /**
@@ -96,7 +115,7 @@ export interface RoomSeatView {
   error?: string;
 }
 
-/** The seat plus what this machine knows about the CLI behind it. */
+/** The seat plus what this machine's last scan learned about the agent behind it. */
 export interface RoomLabAgentView extends RoomSeatView {
   availability: RoomAgentAvailability;
   command?: string;
@@ -115,7 +134,7 @@ export interface AgentDeskSeat {
   title: string;
 }
 
-export interface AgentDeskItem extends RoomAgentInventoryItem {
+export interface AgentDeskItem extends RoomAgentProbeItem {
   seatedIn: AgentDeskSeat[];
   /** The member's own row; empty when it adds nothing to a turn. */
   systemPrompt: string;

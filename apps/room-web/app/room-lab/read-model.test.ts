@@ -1,10 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import {
+  deriveAgentAvailability,
   deriveMemberStatus,
   RoomLabStateSelector,
   takeNewestRoomState,
   type RoomLabState,
 } from './read-model';
+
+describe('deriveAgentAvailability', () => {
+  it('shows the probe answer as the desk word, verbatim', () => {
+    expect(deriveAgentAvailability({ probe: 'missing', seatedIn: 0 })).toBe('missing');
+    expect(deriveAgentAvailability({ probe: 'missing', seatedIn: 2 })).toBe('missing');
+    expect(deriveAgentAvailability({ probe: 'needs-login', seatedIn: 0 })).toBe('needs-login');
+    expect(deriveAgentAvailability({ probe: 'needs-login', seatedIn: 1 })).toBe('needs-login');
+    expect(deriveAgentAvailability({ probe: 'ready', seatedIn: 0 })).toBe('ready');
+  });
+
+  it('reads a ready probe with a seat as seated', () => {
+    expect(deriveAgentAvailability({ probe: 'ready', seatedIn: 1 })).toBe('seated');
+    expect(deriveAgentAvailability({ probe: 'ready', seatedIn: 3 })).toBe('seated');
+  });
+});
 
 describe('deriveMemberStatus', () => {
   it('reads a held lease as 阅读中 until a tool call, then 工作中', () => {

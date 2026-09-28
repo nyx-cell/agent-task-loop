@@ -8,7 +8,8 @@ import {
   type AgentDefinition,
   type RoomLabAgentId,
 } from '../domain/agent-registry';
-import { defaultRoomHome } from './room-home.server';
+import { defaultRoomHome, nowIso } from './room-home.server';
+import { randomAgentColor } from './agent-seed.server';
 import { runMigrations } from './migrations';
 import { SqliteRoomStreamStore } from './sqlite-room-unit-of-work.server';
 
@@ -191,6 +192,29 @@ export class SqliteRoomStore {
     this.db
       .prepare('UPDATE agents SET system_prompt = ? WHERE id = ?')
       .run(prompt.trim(), agentId);
+  }
+
+  /**
+   * One new row from the desk's add-agent form. The endpoint's own columns are
+   * assigned exactly as the seed assigns them: a hue drawn from the identity
+   * ramp, and the next seat at the end of the desk. The prompt starts empty and
+   * `timeout_ms` at the room default, so the insert names none of them.
+   */
+  addAgent(input: { id: string; label: string; role: string; command: string }): void {
+    const last = this.db.prepare('SELECT MAX(position) AS position FROM agents')
+      .get() as unknown as { position: number | null };
+    this.db.prepare(`
+      INSERT INTO agents (id, label, role, command, color, position, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.id,
+      input.label,
+      input.role,
+      input.command,
+      randomAgentColor(),
+      (last.position === null ? -1 : Number(last.position)) + 1,
+      nowIso(),
+    );
   }
 
   /** The record and its write points for one room (RFC 0015). */

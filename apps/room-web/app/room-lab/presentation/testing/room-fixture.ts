@@ -8,7 +8,7 @@ export function roomFixture(overrides: Partial<RoomLabState> = {}): RoomLabState
     settings: { wake: 'broadcast', serial: false },
     activeAgentIds: TEST_AGENTS.map(agent => agent.id),
     agents: TEST_AGENTS.map(agent => ({
-      ...agent, active: true, status: 'present', availability: 'runnable', seenSeq: 0,
+      ...agent, active: true, status: 'present', availability: 'ready', seenSeq: 0,
     })),
     events: [],
     turns: [],

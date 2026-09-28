@@ -27,7 +27,7 @@ export const headers: HeadersFunction = () => noStoreHeaders;
 export async function loader(_args: LoaderFunctionArgs) {
   try {
     assertLocalRuntime();
-    return data(getRoomLabHost().agentDesk(), { headers: noStoreHeaders });
+    return data(await getRoomLabHost().agentDesk(), { headers: noStoreHeaders });
   } catch (error) {
     if (error instanceof LocalRequestError) {
       throw data({ error: error.message }, { status: error.status, headers: noStoreHeaders });
@@ -47,10 +47,19 @@ export async function action({ request }: ActionFunctionArgs) {
       const agentId = String(form.get('agentId') ?? '');
       if (!host.agents.has(agentId)) throw new RoomInputError('Unknown agent');
       host.saveSystemPrompt(agentId, String(form.get('systemPrompt') ?? ''));
-      return data<AgentDeskView>(host.agentDesk(), { headers: noStoreHeaders });
+      return data<AgentDeskView>(await host.agentDesk(), { headers: noStoreHeaders });
     }
-    host.refreshInventory();
-    return data<AgentDeskView>(host.agentDesk(), { headers: noStoreHeaders });
+    if (intent === 'add-agent') {
+      await host.addAgent({
+        id: String(form.get('id') ?? ''),
+        label: String(form.get('label') ?? ''),
+        ...(String(form.get('role') ?? '').trim() ? { role: String(form.get('role')) } : {}),
+        command: String(form.get('command') ?? ''),
+      });
+      return data<AgentDeskView>(await host.agentDesk(), { headers: noStoreHeaders });
+    }
+    await host.refreshInventory();
+    return data<AgentDeskView>(await host.agentDesk(), { headers: noStoreHeaders });
   } catch (error) {
     // A guard failure is the page's problem and goes to the boundary; anything
     // the desk itself refused comes back to the form with its own status.
@@ -67,7 +76,13 @@ export async function action({ request }: ActionFunctionArgs) {
 export default function AgentDeskRoute() {
   const desk = useActionData<typeof action>();
   const loaded = useLoaderData<typeof loader>();
-  return <AgentDesk desk={desk && 'agents' in desk ? desk : loaded} />;
+  // A desk payload replaces the view; an error lands next to the form that caused it.
+  return (
+    <AgentDesk
+      desk={desk && 'agents' in desk ? desk : loaded}
+      error={desk && 'error' in desk ? desk.error : undefined}
+    />
+  );
 }
 
 export function ErrorBoundary() {
