@@ -7,7 +7,6 @@
     "components": "app/components/ui (shadcn new-york; see components.json)",
     "clusters": "app/room-lab/presentation/ui.ts",
     "statusCopy": "app/room-lab/presentation/agent-status.ts",
-    "round": "app/room-lab/presentation/round.ts",
     "note": "shadcn 的标准词表，宣纸的配色。Frontmatter 的颜色是亮色主题；暗色在 extensions.colorMeta.<token>.dark，由根节点上的 dark class 切换（没有 prefers-color-scheme 媒体查询，跟随系统由 JS 解析）。上一轮自造的 canvas/side/stream/raised/ink-N/sel/run/held/err/done/id-N 及所有旧别名已删除。--chart-1…5 是五位成员的身份色（就座顺序）；--accent 是上一轮那层 8% 墨的实色等价物；--info/--warning/--success/--destructive-soft 是按 shadcn 的配对写法补出来的四对：token 是洗底，-foreground 是落在它上面的墨。 正文是自托管的思源宋体，界面词是 Inter；输入框是 Tiptap，提及是一枚序列化回 @id 的胶囊。",
     "composer": "app/room-lab/presentation/RoomComposer.tsx + composer-doc.ts + composer-mention.tsx + mention-chip.ts"
   },
