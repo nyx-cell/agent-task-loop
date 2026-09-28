@@ -20,5 +20,4 @@ export function sessionKey(id: AgentSessionId): string {
 export interface AgentSession {
   id: AgentSessionId;
   seenSeq: RoomSeq;
-  heldUpToSeq?: RoomSeq;
 }

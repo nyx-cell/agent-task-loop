@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { MemoryRoomStreamStore, createMemoryRoomStreamStore, sessionKey } from '../src/index';
+import {
+  MemoryRoomStreamStore,
+  sessionKey,
+  type SpeakCommand,
+} from '../src/index';
 
 const room = { tenantId: 't1', conversationId: 'c1' };
 const botA = {
@@ -10,106 +14,108 @@ const botA = {
 };
 const botB = { ...botA, agentId: 'bot-b' };
 
-describe('replyInSerial HELD', () => {
-  it('posts the first reply and holds the second behind unseen posts', async () => {
-    const store = createMemoryRoomStreamStore();
-    const first = await store.replyInSerial({ session: botA, body: 'alpha' });
-    const second = await store.replyInSerial({ session: botB, body: 'beta' });
+async function admitHuman(store: MemoryRoomStreamStore, messageId: string, body: string) {
+  return store.admit({
+    roomId: room,
+    messageId,
+    author: { kind: 'human', id: 'alice' },
+    kind: 'human',
+    body,
+  });
+}
 
-    expect(first).toMatchObject({ outcome: 'posted', seq: 1 });
+function speakCommand(overrides: Partial<SpeakCommand>): SpeakCommand {
+  return {
+    session: botA,
+    body: 'a reply',
+    addressedTo: [],
+    readUpToSeq: 1,
+    triggerSeq: 1,
+    ...overrides,
+  };
+}
+
+describe('speak HELD', () => {
+  it('posts the first reply and holds the second behind the other’s post', async () => {
+    const store = new MemoryRoomStreamStore();
+    await admitHuman(store, 'h1', 'please look');
+    const first = await store.speak(speakCommand({ session: botA, body: 'alpha' }));
+    const second = await store.speak(speakCommand({ session: botB, body: 'beta' }));
+
+    expect(first).toMatchObject({ outcome: 'posted', seq: 2, event: { wakeDepth: 1 } });
     expect(second.outcome).toBe('held');
     if (second.outcome === 'held') {
-      expect(second.heldUpToSeq).toBe(1);
-      expect(second.newer.map(event => event.body)).toEqual(['alpha']);
+      expect(second.newer.map(event => event.seq)).toEqual([2]);
+      expect(second.newer[0]).toMatchObject({ author: { id: 'bot-a' }, body: 'alpha' });
     }
-    expect(await store.head(room)).toBe(1);
+    expect(await store.head(room)).toBe(2);
+    expect(store.inspectSession(botB)).toEqual({ id: botB, seenSeq: 0 });
   });
 
-  it('posts after a matching hold ack, and ignores a preemptive ack', async () => {
-    const store = createMemoryRoomStreamStore();
-    await store.replyInSerial({ session: botA, body: 'alpha' });
-    const held = await store.replyInSerial({ session: botB, body: 'beta' });
-    expect(held.outcome).toBe('held');
-
-    const ignored = await store.replyInSerial({
-      session: botB,
-      body: 'beta',
-      ackHeldUpToSeq: 99,
-    });
-    expect(ignored.outcome).toBe('held');
-
-    const posted = await store.replyInSerial({
-      session: botB,
-      body: 'beta after catch-up',
-      ackHeldUpToSeq: held.outcome === 'held' ? held.heldUpToSeq : 0,
-    });
-    expect(posted).toMatchObject({ outcome: 'posted', seq: 2 });
-  });
-
-  it('keeps transport idempotency separate from internal event identity', async () => {
+  it('posts once the turn has read up to head, and moves the cursor to the new seq', async () => {
     const store = new MemoryRoomStreamStore();
-    await store.admit({
-      roomId: room,
-      messageId: `posted:${sessionKey(botA)}:2`,
-      author: { kind: 'human', id: 'alice' },
-      kind: 'human',
-      body: 'same text as an internal naming convention',
-    });
-    const held = await store.replyInSerial({ session: botA, body: 'reply' });
-    expect(held).toMatchObject({ outcome: 'held', heldUpToSeq: 1 });
+    await admitHuman(store, 'h1', 'please look');
+    await store.speak(speakCommand({ session: botA, body: 'alpha' }));
 
-    const posted = await store.replyInSerial({
-      session: botA,
-      body: 'reply',
-      ackHeldUpToSeq: 1,
-    });
-    expect(posted).toMatchObject({ outcome: 'posted', seq: 2 });
-    expect(store.inspectSession(botA)).toEqual({ id: botA, seenSeq: 2 });
+    const posted = await store.speak(
+      speakCommand({ session: botB, body: 'beta after catch-up', readUpToSeq: 2, triggerSeq: 2 }),
+    );
+
+    expect(posted).toMatchObject({ outcome: 'posted', seq: 3 });
+    expect(store.inspectSession(botB)).toEqual({ id: botB, seenSeq: 3 });
   });
 
-  it('holds when a human post is newer than seen', async () => {
-    const store = createMemoryRoomStreamStore();
-    await store.admit({
-      roomId: room,
-      messageId: 'h1',
-      author: { kind: 'human', id: 'alice' },
-      kind: 'human',
-      body: 'please look',
-    });
-    const result = await store.replyInSerial({ session: botA, body: 'working' });
-    expect(result.outcome).toBe('held');
-    if (result.outcome === 'held') {
-      expect(result.newer[0]?.kind).toBe('human');
-    }
-  });
-
-  it('does not hold or advance seen for control-plane origin', async () => {
+  it('ignores the member’s own posts when deciding HELD', async () => {
     const store = new MemoryRoomStreamStore();
-    await store.admit({
-      roomId: room,
-      messageId: 'h1',
-      author: { kind: 'human', id: 'alice' },
-      kind: 'human',
-      body: 'hello',
-    });
-    const result = await store.replyInSerial({
-      session: botA,
-      body: 'member-joined',
-      origin: 'control-plane',
-    });
-    expect(result.outcome).toBe('posted');
-    if (result.outcome === 'posted') {
-      expect(result.seq).toBe(2);
-    }
+    await admitHuman(store, 'h1', 'please look');
+    await store.speak(speakCommand({ session: botA, body: 'first' }));
+    // A second runtime generation of the same member: it has read the human
+    // message, and the only event past its cursor is its own earlier post.
+    const nextGeneration = { ...botA, runtimeGenerationId: 'g2' };
+    store.advanceSeen(nextGeneration, 1);
+
+    const again = await store.speak(speakCommand({ session: nextGeneration, body: 'second' }));
+
+    expect(again).toMatchObject({ outcome: 'posted', seq: 3 });
+  });
+
+  it('posts control-plane origin without creating or advancing a session', async () => {
+    const store = new MemoryRoomStreamStore();
+    await admitHuman(store, 'h1', 'hello');
+    const result = await store.speak(
+      speakCommand({ body: 'member-joined', origin: 'control-plane' }),
+    );
+
+    expect(result).toMatchObject({ outcome: 'posted', seq: 2 });
     const slice = await store.readSlice(room, 0, { maxEvents: 10 });
     expect(slice.events.map(event => event.kind)).toEqual(['human', 'control-plane']);
     expect(slice.head).toBe(2);
     expect(store.inspectSession(botA)).toBeUndefined();
   });
 
+  it('carries addressedTo on a member post through the memory store round trip', async () => {
+    const store = new MemoryRoomStreamStore();
+    await admitHuman(store, 'h1', 'hello');
+
+    await store.speak(speakCommand({ session: botA, body: 'for bot-b', addressedTo: ['bot-b'] }));
+
+    // The store rehydrates the Room aggregate from its committed snapshot on
+    // every read, so this slice is the round trip.
+    const slice = await store.readSlice(room, 1, { maxEvents: 10 });
+    expect(slice.events).toHaveLength(1);
+    expect(slice.events[0]).toMatchObject({
+      kind: 'posted',
+      author: { id: 'bot-a' },
+      body: 'for bot-b',
+      addressedTo: ['bot-b'],
+      wakeDepth: 1,
+    });
+  });
+
   it('does not deduplicate internal posts against transport ids', async () => {
-    const store = createMemoryRoomStreamStore();
-    const posted = await store.replyInSerial({ session: botA, body: 'internal' });
+    const store = new MemoryRoomStreamStore();
+    await admitHuman(store, 'h1', 'please look');
+    const posted = await store.speak(speakCommand({ body: 'internal' }));
     expect(posted.outcome).toBe('posted');
     if (posted.outcome !== 'posted') return;
 
@@ -128,69 +134,138 @@ describe('replyInSerial HELD', () => {
       body: 'duplicate transport delivery',
     });
 
-    expect(admitted).toMatchObject({ outcome: 'admitted', seq: 2 });
-    expect(duplicate).toMatchObject({ outcome: 'duplicate', seq: 2 });
+    expect(admitted).toMatchObject({ outcome: 'admitted', seq: 3 });
+    expect(duplicate).toMatchObject({ outcome: 'duplicate', seq: 3 });
   });
 
-  it('rolls back hold acknowledgement and append together when commit fails', async () => {
+  it('rolls back the append and the cursor together when commit fails', async () => {
     let failCommit = false;
     const store = new MemoryRoomStreamStore({
       beforeCommit: () => {
         if (failCommit) throw new Error('commit failed');
       },
     });
-    await store.replyInSerial({ session: botA, body: 'alpha' });
-    const held = await store.replyInSerial({ session: botB, body: 'beta' });
-    expect(held.outcome).toBe('held');
-    if (held.outcome !== 'held') return;
+    await admitHuman(store, 'h1', 'please look');
+    await store.speak(speakCommand({ session: botA, body: 'alpha' }));
 
     failCommit = true;
     await expect(
-      store.replyInSerial({
-        session: botB,
-        body: 'beta after catch-up',
-        ackHeldUpToSeq: held.heldUpToSeq,
-      }),
+      store.speak(speakCommand({ session: botB, body: 'beta', readUpToSeq: 2, triggerSeq: 2 })),
     ).rejects.toThrow('commit failed');
     failCommit = false;
 
-    expect(await store.head(room)).toBe(1);
-    expect(store.inspectSession(botB)).toMatchObject({ seenSeq: 0, heldUpToSeq: 1 });
+    expect(await store.head(room)).toBe(2);
+    expect(store.inspectSession(botB)).toBeUndefined();
     await expect(
-      store.replyInSerial({
-        session: botB,
-        body: 'beta after retry',
-        ackHeldUpToSeq: held.heldUpToSeq,
-      }),
-    ).resolves.toMatchObject({ outcome: 'posted', seq: 2 });
+      store.speak(speakCommand({ session: botB, body: 'beta after retry', readUpToSeq: 2, triggerSeq: 2 })),
+    ).resolves.toMatchObject({ outcome: 'posted', seq: 3 });
   });
 });
 
-describe('completeSilentlyInSerial HELD', () => {
-  it('atomically holds a silent completion behind a newer Room event', async () => {
+describe('pass', () => {
+  it('moves the cursor to readUpToSeq and never returns held', async () => {
+    const store = new MemoryRoomStreamStore();
+    await admitHuman(store, 'h1', 'please look');
+    await store.speak(speakCommand({ session: botA, body: 'alpha' }));
+
+    // bot-b has not read seq 2, but pass is the write point for a turn that
+    // ends without a post: it advances to what the turn read and returns.
+    await expect(store.pass({ session: botB, readUpToSeq: 1 })).resolves.toEqual({
+      outcome: 'passed',
+    });
+    expect(store.inspectSession(botB)).toEqual({ id: botB, seenSeq: 1 });
+    expect(await store.head(room)).toBe(2);
+  });
+
+  it('does not move the cursor past what the turn read', async () => {
+    const store = new MemoryRoomStreamStore();
+    await admitHuman(store, 'h1', 'please look');
+    await store.speak(speakCommand({ session: botA, body: 'alpha' }));
+
+    await store.pass({ session: botB, readUpToSeq: 1 });
+    await store.pass({ session: botB, readUpToSeq: 2 });
+
+    expect(store.inspectSession(botB)?.seenSeq).toBe(2);
+  });
+});
+
+describe('S1 replyInSerial / completeSilentlyInSerial shims', () => {
+  it('replyInSerial posts from the stored cursor and maps held to the newest unread seq', async () => {
+    const store = new MemoryRoomStreamStore();
+    await admitHuman(store, 'h1', 'please look');
+    store.advanceSeen(botA, 1);
+    const posted = await store.replyInSerial({ session: botA, body: 'alpha' });
+    expect(posted).toMatchObject({ outcome: 'posted', seq: 2 });
+
+    const held = await store.replyInSerial({ session: botB, body: 'beta' });
+    // The stored cursor is 0, so both unread events come back with the HELD.
+    expect(held).toMatchObject({
+      outcome: 'held',
+      heldUpToSeq: 2,
+    });
+    if (held.outcome !== 'held') return;
+    expect(held.newer.map(event => event.seq)).toEqual([1, 2]);
+    expect(store.inspectSession(botB)).toEqual({ id: botB, seenSeq: 0 });
+
+    const afterCatchUp = await store.replyInSerial({
+      session: botB,
+      body: 'beta after catch-up',
+      ackHeldUpToSeq: 2,
+    });
+    expect(afterCatchUp).toMatchObject({ outcome: 'posted', seq: 3 });
+    expect(store.inspectSession(botB)?.seenSeq).toBe(3);
+  });
+
+  it('completeSilentlyInSerial reports held behind unread events and passes otherwise', async () => {
     const store = new MemoryRoomStreamStore();
     store.ensureSession(botA);
-    await store.admit({
-      roomId: room,
-      messageId: 'human:before-generation',
-      author: { kind: 'human', id: 'alice' },
-      kind: 'human',
-      body: 'first fact',
-    });
+    await admitHuman(store, 'h1', 'first fact');
     store.advanceSeen(botA, 1);
-    await store.admit({
-      roomId: room,
-      messageId: 'human:during-generation',
-      author: { kind: 'human', id: 'alice' },
-      kind: 'human',
-      body: 'newer fact',
+    await admitHuman(store, 'h2', 'newer fact');
+
+    await expect(
+      store.completeSilentlyInSerial({ session: botA, ackHeldUpToSeq: 1 }),
+    ).resolves.toMatchObject({
+      outcome: 'held',
+      heldUpToSeq: 2,
+      newer: [{ seq: 2, body: 'newer fact' }],
+    });
+    expect(store.inspectSession(botA)?.seenSeq).toBe(1);
+
+    await expect(
+      store.completeSilentlyInSerial({ session: botA, ackHeldUpToSeq: 2 }),
+    ).resolves.toEqual({ outcome: 'silent' });
+    expect(store.inspectSession(botA)?.seenSeq).toBe(2);
+  });
+
+  it('replyInSerial keeps the control-plane origin path out of the session table', async () => {
+    const store = new MemoryRoomStreamStore();
+    await admitHuman(store, 'h1', 'hello');
+    const result = await store.replyInSerial({
+      session: botA,
+      body: 'member-joined',
+      origin: 'control-plane',
     });
 
-    await expect(store.completeSilentlyInSerial({
-      session: botA,
-      ackHeldUpToSeq: 1,
-    })).resolves.toMatchObject({ outcome: 'held', heldUpToSeq: 2 });
-    expect(store.inspectSession(botA)).toMatchObject({ seenSeq: 1, heldUpToSeq: 2 });
+    expect(result).toMatchObject({ outcome: 'posted', seq: 2 });
+    const slice = await store.readSlice(room, 1, { maxEvents: 10 });
+    expect(slice.events[0]).toMatchObject({ kind: 'control-plane' });
+    expect(store.inspectSession(botA)).toBeUndefined();
+  });
+
+  it('keeps internal post message ids collision-free per member', async () => {
+    const store = new MemoryRoomStreamStore();
+    await admitHuman(store, 'h1', 'please look');
+    store.advanceSeen(botA, 1);
+    await store.replyInSerial({ session: botA, body: 'alpha' });
+    store.advanceSeen(botB, 2);
+    await store.replyInSerial({ session: botB, body: 'beta' });
+
+    const slice = await store.readSlice(room, 1, { maxEvents: 10 });
+    expect(slice.events.map(event => event.messageId)).toEqual([
+      `posted:${sessionKey(botA)}:2`,
+      `posted:${sessionKey(botB)}:3`,
+    ]);
   });
 });
 
@@ -212,7 +287,7 @@ describe('readSlice', () => {
   });
 
   it('returns events after seq within the event and char budgets', async () => {
-    const store = createMemoryRoomStreamStore();
+    const store = new MemoryRoomStreamStore();
     await store.admit({
       roomId: room,
       messageId: 'm1',
@@ -241,7 +316,7 @@ describe('readSlice', () => {
   });
 
   it('does not exceed maxChars for an oversized first event', async () => {
-    const store = createMemoryRoomStreamStore();
+    const store = new MemoryRoomStreamStore();
     await store.admit({
       roomId: room,
       messageId: 'oversized',

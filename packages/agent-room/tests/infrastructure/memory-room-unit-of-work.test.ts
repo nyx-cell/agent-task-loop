@@ -35,6 +35,7 @@ describe('MemoryRoomUnitOfWork', () => {
             body: 'reply',
             origin: 'endpoint',
             addressedTo: [],
+            wakeDepth: 1,
           },
           '2026-08-29T00:00:00.000Z',
         );
@@ -63,6 +64,7 @@ describe('MemoryRoomUnitOfWork', () => {
           body: 'first room',
           origin: 'endpoint',
           addressedTo: [],
+          wakeDepth: 0,
         },
         '2026-08-29T00:00:00.000Z',
       );

@@ -1,24 +1,19 @@
 import type { AgentId, RoomEvent } from '../../room/domain/model';
 
-export type WakePolicy = 'mention-only' | 'all-human-messages';
-
-/** Domain service: seeing a room event and waking for it are separate decisions. */
+/**
+ * Domain service: the broadcast wake rule. A control-plane event wakes nobody,
+ * an event never wakes its own author, and a member at or above the room's
+ * depth ceiling stops being woken. Everyone else is woken. Seeing a room event
+ * and waking for it are separate decisions; filtering by `addressedTo` stays
+ * with the endpoint's room setting, not here.
+ */
 export function shouldWake(input: {
   event: RoomEvent;
-  agentId: AgentId;
-  policy: WakePolicy;
+  memberId: AgentId;
+  ceiling: number;
 }): boolean {
-  const { event, agentId, policy } = input;
-  if (
-    event.origin === 'control-plane' ||
-    event.kind === 'control-plane' ||
-    event.author.kind === 'control-plane'
-  ) {
-    return false;
-  }
-  if (event.author.id === agentId) return false;
-  if (event.kind === 'companion' || event.author.kind === 'agent') return false;
-  if (event.author.kind !== 'human' || event.kind !== 'human') return false;
-  if (event.addressedTo.includes(agentId)) return true;
-  return policy === 'all-human-messages';
+  const { event, memberId, ceiling } = input;
+  if (event.kind === 'control-plane') return false;
+  if (event.author.id === memberId) return false;
+  return event.wakeDepth < ceiling;
 }

@@ -75,22 +75,6 @@ export class SqliteRoomUnitOfWork implements RoomUnitOfWork {
     return this.changeSession(id, session => session.advanceSeen(seq));
   }
 
-  hold(id: AgentSessionId, heldUpToSeq: RoomSeq): AgentSession {
-    return this.changeSession(id, session => session.hold(heldUpToSeq));
-  }
-
-  ackHold(id: AgentSessionId, heldUpToSeq: RoomSeq): boolean {
-    this.hydrate();
-    if (!this.sessions.has(sessionKey(id))) return false;
-    const session = this.loadSession(id);
-    const acked = session.ackHold(heldUpToSeq);
-    if (acked) {
-      this.sessions.set(sessionKey(id), session.snapshot());
-      this.persist();
-    }
-    return acked;
-  }
-
   lastEvent(): { body: string; at: string } | undefined {
     this.hydrate();
     const last = this.events.at(-1);
@@ -122,15 +106,7 @@ export class SqliteRoomUnitOfWork implements RoomUnitOfWork {
   private loadSession(id: AgentSessionId): AgentSessionAggregate {
     this.hydrate();
     const existing = this.sessions.get(sessionKey(id));
-    return new AgentSessionAggregate(
-      id,
-      existing
-        ? {
-            seenSeq: existing.seenSeq,
-            ...(existing.heldUpToSeq === undefined ? {} : { heldUpToSeq: existing.heldUpToSeq }),
-          }
-        : undefined,
-    );
+    return new AgentSessionAggregate(id, existing ? { seenSeq: existing.seenSeq } : undefined);
   }
 
   private changeSession(id: AgentSessionId, change: (session: AgentSessionAggregate) => void): AgentSession {
@@ -151,7 +127,7 @@ export class SqliteRoomUnitOfWork implements RoomUnitOfWork {
     `).all(roomId) as unknown as EventRow[];
     this.events = eventRows.map(row => toEvent(this.roomId, row));
     const sessionRows = this.db.prepare(`
-      SELECT tenant_id, agent_id, room_id, runtime_generation_id, seen_seq, held_up_to_seq
+      SELECT tenant_id, agent_id, room_id, runtime_generation_id, seen_seq
       FROM agent_sessions WHERE room_id = ?
     `).all(roomId) as unknown as SessionRow[];
     for (const row of sessionRows) {
@@ -187,10 +163,12 @@ export class SqliteRoomUnitOfWork implements RoomUnitOfWork {
         );
       }
       this.db.prepare('DELETE FROM agent_sessions WHERE room_id = ?').run(roomId);
+      // `held_up_to_seq` stays in the schema until migration 0007 (RFC 0015 S3);
+      // sessions no longer hold, so it is simply left NULL.
       const insertSession = this.db.prepare(`
         INSERT INTO agent_sessions (
-          tenant_id, agent_id, room_id, runtime_generation_id, seen_seq, held_up_to_seq
-        ) VALUES (?, ?, ?, ?, ?, ?)
+          tenant_id, agent_id, room_id, runtime_generation_id, seen_seq
+        ) VALUES (?, ?, ?, ?, ?)
       `);
       for (const session of this.sessions.values()) {
         insertSession.run(
@@ -199,7 +177,6 @@ export class SqliteRoomUnitOfWork implements RoomUnitOfWork {
           session.id.roomId.conversationId,
           session.id.runtimeGenerationId,
           session.seenSeq,
-          session.heldUpToSeq ?? null,
         );
       }
       this.db.exec('COMMIT');
@@ -235,10 +212,6 @@ export class SqliteRoomStreamStore {
 
   advanceSeen(id: AgentSessionId, seq: RoomSeq): AgentSession {
     return this.unitOfWork.advanceSeen(id, seq);
-  }
-
-  ackHold(id: AgentSessionId, heldUpToSeq: RoomSeq): boolean {
-    return this.unitOfWork.ackHold(id, heldUpToSeq);
   }
 
   lastEvent(): { body: string; at: string } | undefined {
@@ -289,7 +262,6 @@ interface SessionRow {
   room_id: string;
   runtime_generation_id: string;
   seen_seq: number;
-  held_up_to_seq: number | null;
 }
 
 function toEvent(roomId: RoomId, row: EventRow): RoomEvent {
@@ -303,6 +275,9 @@ function toEvent(roomId: RoomId, row: EventRow): RoomEvent {
     body: row.body,
     origin: row.origin,
     addressedTo: JSON.parse(row.addressed_to) as string[],
+    // The wake_depth column arrives with migration 0004 (RFC 0015 S3); until
+    // then every restored event stands at depth 0.
+    wakeDepth: 0,
     at: row.at,
   };
 }
@@ -316,7 +291,6 @@ function toSession(row: SessionRow): AgentSession {
       runtimeGenerationId: row.runtime_generation_id,
     },
     seenSeq: Number(row.seen_seq),
-    ...(row.held_up_to_seq === null ? {} : { heldUpToSeq: Number(row.held_up_to_seq) }),
   };
 }
 
@@ -327,6 +301,5 @@ function cloneSession(session: AgentSession): AgentSession {
       roomId: { ...session.id.roomId },
     },
     seenSeq: session.seenSeq,
-    ...(session.heldUpToSeq === undefined ? {} : { heldUpToSeq: session.heldUpToSeq }),
   };
 }

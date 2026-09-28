@@ -1,7 +1,7 @@
 import { sessionKey, type AgentSessionId } from '../../agent-session/domain/model';
 import { RoomValidationError } from './errors';
 import { sameRoomId } from './model';
-import type { RoomReplyResult } from './reply-in-serial';
+import type { SpeakResult } from './speak';
 import { Room } from './room';
 
 /** Posts host control-plane state without creating or advancing an AgentSession. */
@@ -10,7 +10,7 @@ export function postControlPlane(
   actor: AgentSessionId,
   body: string,
   at: string,
-): RoomReplyResult {
+): Extract<SpeakResult, { outcome: 'posted' }> {
   if (!sameRoomId(room.id, actor.roomId) || actor.tenantId !== room.id.tenantId) {
     throw new RoomValidationError('control-plane actor belongs to a different room');
   }
@@ -22,6 +22,7 @@ export function postControlPlane(
       body,
       origin: 'control-plane',
       addressedTo: [],
+      wakeDepth: 0,
     },
     at,
   );

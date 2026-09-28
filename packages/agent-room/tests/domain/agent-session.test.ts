@@ -16,12 +16,9 @@ describe('AgentSession aggregate', () => {
     expect(session.snapshot().seenSeq).toBe(5);
   });
 
-  it('acks only the current hold and consumes it once', () => {
+  it('moves the cursor onto a post it recorded', () => {
     const session = new AgentSessionAggregate(id);
-    session.hold(7);
-    expect(session.ackHold(6)).toBe(false);
-    expect(session.ackHold(7)).toBe(true);
-    expect(session.ackHold(7)).toBe(false);
+    session.recordPost(7);
     expect(session.snapshot()).toEqual({ id, seenSeq: 7 });
   });
 
@@ -31,30 +28,11 @@ describe('AgentSession aggregate', () => {
     expect(session.id).toEqual(id);
   });
 
-  it('does not keep a hold at or behind the seen cursor', () => {
-    const session = new AgentSessionAggregate(id);
-    session.advanceSeen(5);
-    session.hold(5);
-    expect(session.snapshot().heldUpToSeq).toBeUndefined();
-
-    session.hold(8);
-    session.advanceSeen(8);
-    expect(session.snapshot().heldUpToSeq).toBeUndefined();
-  });
-
-  it('rejects an invalid persisted hold watermark', () => {
-    expect(() => new AgentSessionAggregate(id, { seenSeq: 5, heldUpToSeq: 3 })).toThrow(
-      /hold must be ahead/,
-    );
-  });
-
   it.each([Number.NaN, Number.POSITIVE_INFINITY, 1.5, -1])(
     'rejects invalid sequence transitions: %s',
     invalidSeq => {
       const session = new AgentSessionAggregate(id);
       expect(() => session.advanceSeen(invalidSeq)).toThrow(/non-negative integer/);
-      expect(() => session.hold(invalidSeq)).toThrow(/non-negative integer/);
-      expect(() => session.ackHold(invalidSeq)).toThrow(/non-negative integer/);
       expect(() => session.recordPost(invalidSeq)).toThrow(/non-negative integer/);
       expect(session.snapshot()).toEqual({ id, seenSeq: 0 });
     },

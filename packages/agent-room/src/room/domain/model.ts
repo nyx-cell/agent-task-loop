@@ -20,7 +20,7 @@ export function sameRoomId(left: RoomId, right: RoomId): boolean {
   return left.tenantId === right.tenantId && left.conversationId === right.conversationId;
 }
 
-export type RoomEventKind = 'human' | 'posted' | 'companion' | 'control-plane';
+export type RoomEventKind = 'human' | 'posted' | 'control-plane';
 export type RoomOrigin = 'endpoint' | 'control-plane';
 
 export interface RoomAuthor {
@@ -40,6 +40,8 @@ export interface RoomEvent {
   body: string;
   origin: RoomOrigin;
   addressedTo: AgentId[];
+  /** Distance from the human event that opened the round. A human admit is 0; a post is its trigger's depth plus one. */
+  wakeDepth: number;
   at: string;
 }
 

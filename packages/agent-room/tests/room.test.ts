@@ -48,6 +48,7 @@ describe('Room aggregate', () => {
       body: 'not projected yet',
       origin: 'endpoint' as const,
       addressedTo: [],
+      wakeDepth: 1,
       at: '2026-08-29T00:00:00.000Z',
     };
     const room = new Room(roomId, [internalEvent]);
@@ -68,5 +69,29 @@ describe('Room aggregate', () => {
       seq: 2,
       event: { transportMessageId: 'same-display-id' },
     });
+  });
+
+  it('rejects a restored event whose wakeDepth is missing or negative', () => {
+    const room = new Room(roomId);
+    const admitted = room.admit(
+      {
+        roomId,
+        messageId: 'm1',
+        author: { kind: 'human', id: 'alice' },
+        kind: 'human',
+        body: 'hello',
+      },
+      '2026-08-29T00:00:00.000Z',
+    );
+    expect(admitted.event.wakeDepth).toBe(0);
+
+    const restored = { ...admitted.event };
+    delete (restored as Partial<typeof restored>).wakeDepth;
+    expect(() => new Room(roomId, [restored as typeof admitted.event])).toThrow(
+      /invalid wakeDepth/,
+    );
+    expect(() =>
+      new Room(roomId, [{ ...admitted.event, wakeDepth: -1 }]),
+    ).toThrow(/invalid wakeDepth/);
   });
 });

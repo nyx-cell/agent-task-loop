@@ -64,12 +64,33 @@ describe('Room aggregate', () => {
       body: 'hello',
       origin: 'endpoint' as const,
       addressedTo: [],
+      wakeDepth: 1,
     };
     expect(room.post(post, '2026-08-29T00:00:00.000Z').seq).toBe(1);
     expect(room.post(post, '2026-08-29T00:01:00.000Z').seq).toBe(2);
     expect(room.post({ ...post, body: ' ' }, '2026-08-29T00:02:00.000Z').seq).toBe(3);
     expect(() => room.post({ ...post, messageId: ' ' }, '2026-08-29T00:02:00.000Z')).toThrow(
       /messageId cannot be blank/,
+    );
+  });
+
+  it('carries the wake depth a post is given and refuses an invalid one', () => {
+    const room = new Room(roomId);
+    const post = {
+      messageId: 'posted-1',
+      author: { kind: 'agent' as const, id: 'bot' },
+      kind: 'posted' as const,
+      body: 'hello',
+      origin: 'endpoint' as const,
+      addressedTo: [],
+      wakeDepth: 2,
+    };
+    expect(room.post(post, '2026-08-29T00:00:00.000Z').wakeDepth).toBe(2);
+    expect(() => room.post({ ...post, wakeDepth: -1 }, '2026-08-29T00:01:00.000Z')).toThrow(
+      /wakeDepth must be a non-negative integer/,
+    );
+    expect(() => room.post({ ...post, wakeDepth: 1.5 }, '2026-08-29T00:01:00.000Z')).toThrow(
+      /wakeDepth must be a non-negative integer/,
     );
   });
 

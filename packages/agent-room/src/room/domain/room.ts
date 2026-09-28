@@ -56,6 +56,7 @@ export class Room {
         body: input.body,
         origin: input.origin ?? (input.kind === 'control-plane' ? 'control-plane' : 'endpoint'),
         addressedTo: input.addressedTo ?? [],
+        wakeDepth: 0,
       },
       at,
     );
@@ -73,6 +74,9 @@ export class Room {
     if (!input.messageId.trim()) {
       throw new RoomValidationError('room event messageId cannot be blank');
     }
+    if (!Number.isSafeInteger(input.wakeDepth) || input.wakeDepth < 0) {
+      throw new RoomValidationError('room event wakeDepth must be a non-negative integer');
+    }
     const event: RoomEvent = {
       seq: this.head + 1,
       roomId: { ...this.roomId },
@@ -85,6 +89,7 @@ export class Room {
       body: input.body,
       origin: input.origin,
       addressedTo: [...input.addressedTo],
+      wakeDepth: input.wakeDepth,
       at,
     };
     this.events.push(event);
@@ -142,6 +147,9 @@ function validateRoomState(id: RoomId, events: RoomEvent[]): void {
     }
     if (!event.messageId.trim()) {
       throw new RoomValidationError('restored room contains a blank messageId');
+    }
+    if (!Number.isSafeInteger(event.wakeDepth) || event.wakeDepth < 0) {
+      throw new RoomValidationError('restored room contains an invalid wakeDepth');
     }
     if (
       event.transportMessageId !== undefined &&

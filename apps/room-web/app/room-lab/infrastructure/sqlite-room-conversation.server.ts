@@ -54,8 +54,8 @@ export class SqliteRoomConversation extends StoredRoomConversation {
       }
       const insertSession = this.db.prepare(`
         INSERT INTO agent_sessions (
-          tenant_id, agent_id, room_id, runtime_generation_id, seen_seq, held_up_to_seq
-        ) VALUES (?, ?, ?, ?, ?, ?)
+          tenant_id, agent_id, room_id, runtime_generation_id, seen_seq
+        ) VALUES (?, ?, ?, ?, ?)
       `);
       for (const session of sessions) {
         insertSession.run(
@@ -64,7 +64,6 @@ export class SqliteRoomConversation extends StoredRoomConversation {
           session.id.roomId.conversationId,
           session.id.runtimeGenerationId,
           session.seenSeq,
-          session.heldUpToSeq ?? null,
         );
       }
       this.db.exec('COMMIT');

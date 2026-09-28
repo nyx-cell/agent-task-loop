@@ -27,6 +27,8 @@ describe('memory admit', () => {
 
     expect(first).toMatchObject({ outcome: 'admitted', seq: 1 });
     expect(second).toMatchObject({ outcome: 'admitted', seq: 2 });
+    // An admitted event opens a round: a human admit is at depth 0.
+    expect(first.event.wakeDepth).toBe(0);
     expect(await store.head(room)).toBe(2);
     expect(await store.head({ tenantId: 't1', conversationId: 'other' })).toBe(0);
   });

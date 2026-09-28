@@ -53,11 +53,10 @@ export class StoredRoomConversation implements RoomConversationPort {
   }
 
   shouldWake(event: RoomEvent, agentId: RoomLabAgentId): boolean {
-    return shouldWake({
-      event,
-      agentId,
-      policy: event.addressedTo.length > 0 ? 'mention-only' : 'all-human-messages',
-    });
+    // The room's wake setting arrives with the RFC 0015 endpoint work; until
+    // then the addressed filter stays here and the depth ceiling is unbounded.
+    if (event.addressedTo.length > 0 && !event.addressedTo.includes(agentId)) return false;
+    return shouldWake({ event, memberId: agentId, ceiling: Number.POSITIVE_INFINITY });
   }
 
   /**
@@ -153,9 +152,10 @@ export class StoredRoomConversation implements RoomConversationPort {
   }
 
   ackHeld(agentId: RoomLabAgentId, heldUpToSeq: number): boolean {
-    const current = this.store.inspectSession(this.sessionId(agentId));
-    if (current && current.seenSeq >= heldUpToSeq) return true;
-    return this.store.ackHold(this.sessionId(agentId), heldUpToSeq);
+    // The hold-acknowledge handshake is gone (RFC 0015): HELD resolves inside
+    // the turn, so a superseded draft is always acknowledged here and the
+    // member re-reads whatever it missed on its next turn.
+    return true;
   }
 
   inspectAgent(agentId: RoomLabAgentId): { seenSeq: number } {
