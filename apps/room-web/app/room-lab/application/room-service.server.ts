@@ -222,8 +222,16 @@ export class RoomService {
       const tools: ToolDefinition[] = [
         roomSpeakTool(turn.handle, {
           isOpen,
-          speak: input =>
-            lease.fence(wakeKey, () => this.options.store.speak({ session, ...input })),
+          speak: async input => {
+            const result = await lease.fence(wakeKey, () =>
+              this.options.store.speak({ session, ...input }));
+            // The chain's second wave: a member's post dispatches exactly as
+            // the human admit does. The turn already resolved the round the
+            // post belongs to — hand it over, so a restart mid-round cannot
+            // strand the post in a round of its own.
+            if (result.outcome === 'posted') this.dispatch(result.event, round);
+            return result;
+          },
         }),
         roomReadTool(turn.handle, {
           isOpen,
@@ -396,16 +404,20 @@ export class RoomService {
    * The dispatcher: who should look at this event, the room's wake mode and
    * budget applied, then `runtime.wake` — one at a time in seat order when the
    * room is serial, concurrently otherwise. The private-room gateway calls it
-   * for the post it made in a child room; a round a dm post opened belongs to
-   * the room its message id names, and charges that room's budget (RFC 0015:
-   * a round spans the private rooms opened inside it).
+   * for the post it made in a child room, and a member's own `room_speak` for
+   * the post it just landed; a round a dm post opened belongs to the room its
+   * message id names, and charges that room's budget (RFC 0015: a round spans
+   * the private rooms opened inside it).
+   *
+   * `turnRound` is the round the dispatching turn already resolved its record
+   * into — the one fact about a member post the event itself does not carry.
    */
-  dispatch(event: RoomEvent): void {
+  dispatch(event: RoomEvent, turnRound?: RoomRound): void {
     const seats = this.options.members();
     const settings = this.options.settings();
     const round: RoomRound = event.kind === 'human' && event.wakeDepth === 0
       ? { roomId: this.homeRoomId, seq: event.seq }
-      : dmRoundOf(event) ?? { roomId: this.homeRoomId, seq: this.roundOfCached(event.seq) };
+      : dmRoundOf(event) ?? turnRound ?? { roomId: this.homeRoomId, seq: this.roundOfCached(event.seq) };
     const local = round.roomId === this.homeRoomId;
     const ceiling = local ? this.ceiling(round.seq) : this.roundLedger(round).ceiling(round.seq);
     let wanted = seats.filter(memberId => shouldWake({ event, memberId, ceiling }));
@@ -415,7 +427,10 @@ export class RoomService {
     if (settings.serial) {
       const key = roundKey(round);
       const entry = this.serialQueues.get(key) ?? { round, queue: [] };
-      entry.queue.push(...wanted);
+      // One entry per member: a post that dispatches while its woken set is
+      // still queued collapses, the way a wake collapses in the runtime's
+      // inbox.
+      entry.queue.push(...wanted.filter(memberId => !entry.queue.includes(memberId)));
       this.serialQueues.set(key, entry);
       this.wakeNextInQueue(round);
       return;
@@ -458,6 +473,10 @@ export class RoomService {
       this.serialQueues.delete(key);
       return;
     }
+    // The queue moves between activations, never during one: a post that
+    // dispatches while a turn of its own round is still running waits, and
+    // that turn's afterTurn calls back here once its writes have landed.
+    if (this.roundHasOpenTurn(round)) return;
     if (!this.chargeRound(entry.round)) {
       this.serialQueues.delete(key);
       this.notifyRound(entry.round);
@@ -465,6 +484,15 @@ export class RoomService {
     }
     const next = entry.queue.shift()!;
     this.options.runtime.wake(runtimeKey(this.options.roomId.conversationId, next));
+  }
+
+  /** Whether a running activation belongs to this round, this room included. */
+  private roundHasOpenTurn(round: RoomRound): boolean {
+    for (const turn of this.openTurns.values()) {
+      if (turn.handle.roundSeq !== round.seq) continue;
+      if ((turn.handle.roundRoomId ?? this.homeRoomId) === round.roomId) return true;
+    }
+    return false;
   }
 
   /**

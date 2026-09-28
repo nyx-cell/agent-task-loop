@@ -337,20 +337,24 @@ describe('room_dm', () => {
       .toEqual([runtimeKey(childRoom, 'codex')]);
     expect(h.wakeKeys()).not.toContain(runtimeKey(childRoom, 'opencode'));
 
-    // And the exchange that follows stays inside the pair too.
+    // And the exchange that follows stays inside the pair too: codex's post
+    // dispatches like an admit, and its woken set is exactly its pair.
     const codex = await h.runtime.activated(runtimeKey(childRoom, 'codex'));
     await codex.speakTool()
       .handler({ body: '不冲突，B 只改上层。', addressedTo: [] }, { sessionId: undefined });
     await codex.end();
     await h.turnLog.waitFor(2);
     expect(h.wakeKeys().filter(key => key.startsWith(`room:${childRoom}:`)))
-      .toEqual([runtimeKey(childRoom, 'codex')]);
+      .toEqual([runtimeKey(childRoom, 'codex'), runtimeKey(childRoom, 'claude')]);
     // The non-member has no session in a room it cannot see.
     expect(h.store.stream(childRoom).inspectSession(sessionId(childRoom, 'opencode'))).toBeUndefined();
   });
 
   it('replays the private-exchange walkthrough across parent and child', async () => {
-    const h = buildLinked({ settings: { roundBudget: 6 } });
+    // The budget now carries the whole causal tree the walkthrough walks:
+    // three admit wakes, the dm, the two posts each chain wake draws, and the
+    // conclusion's two — eight charges, and the notice stays out of the record.
+    const h = buildLinked({ settings: { roundBudget: 9 } });
     // seq 1  you: 这两个方案选哪个？  depth 0, wakes all three.
     await h.parent.sendMessage('这两个方案选哪个？');
     expect((await eventsOf(h.store, PARENT))[0]).toMatchObject({ kind: 'human', wakeDepth: 0 });

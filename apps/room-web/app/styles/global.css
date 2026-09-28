@@ -31,8 +31,10 @@
  * The names are shadcn's, the values are 宣纸's. Three mappings are worth
  * knowing:
  *
- *   --chart-1…5   the five members' identity colours, in seating order:
- *                 claude-relay, claude, codex, opencode, dsh. They colour the
+ *   --chart-1…5   the members' identity colours, drawn once per member row
+ *                 when it is created and stored on it, so the hue follows the
+ *                 member into whatever seat it takes and the roster can be any
+ *                 size up to the five tokens. They colour the
  *                 author name and the two capitals in the mark, whose tile is
  *                 the same hue at 15%.
  *   --accent      the hover/selected fill. It is the solid equivalent of the

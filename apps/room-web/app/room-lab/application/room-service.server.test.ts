@@ -18,14 +18,15 @@ import {
 } from '@rivus/agent-orchestration';
 import type { McpServer } from '@agentclientprotocol/sdk';
 import { RoomService } from './room-service.server';
-import type {
-  AgentDescriptor,
-  RoomLeases,
-  RoomMemberRuntime,
-  RoomRecordStore,
-  RoomSettings,
-  TurnLog,
-  RoomToolHost,
+import {
+  HELD_LIMIT,
+  type AgentDescriptor,
+  type RoomLeases,
+  type RoomMemberRuntime,
+  type RoomRecordStore,
+  type RoomSettings,
+  type TurnLog,
+  type RoomToolHost,
 } from './ports';
 import type { RoomLabAgentId, RoomTurnView } from '../read-model';
 import { copy } from '../copy';
@@ -41,15 +42,21 @@ interface BuildOptions {
   prompts?: Record<string, string>;
   /** Wakes are only recorded; the test starts and ends each turn itself. */
   manual?: boolean;
+  /** Replaces the wake recorder wholesale: the chain tests drive turns themselves. */
+  runtime?: RoomMemberRuntime;
 }
 
 interface Built {
   service: RoomService;
   runtime: FakeRuntime;
+  /** The runtime the service actually holds: the fake, or the test's stand-in. */
+  memberRuntime: RoomMemberRuntime;
   turnLog: FakeTurnLog;
   store: MemoryRoomStreamStore;
   /** The Room tool definitions of each activation, in activation order. */
   tools: ToolDefinition[][];
+  /** One Room tool of one member's latest activation, by name. */
+  toolOf(agentId: string, name: string): ToolDefinition;
 }
 
 /**
@@ -64,9 +71,12 @@ function build(options: BuildOptions = {}): Built {
   const store = new MemoryRoomStreamStore();
   const turnLog = new FakeTurnLog();
   const tools: ToolDefinition[][] = [];
+  const toolsByAgent = new Map<string, ToolDefinition[]>();
   const runtime = new FakeRuntime(options.manual ?? false);
-  const toolHost: RoomToolHost = async ({ tools: definitions }) => {
+  const memberRuntime = options.runtime ?? runtime;
+  const toolHost: RoomToolHost = async ({ agentId, tools: definitions }) => {
     tools.push(definitions);
+    toolsByAgent.set(agentId, definitions);
     return { endpoint: {} as unknown as McpServer, url: 'http://127.0.0.1:0/mcp', close: async () => {} };
   };
   const prompts = options.prompts ?? {};
@@ -87,7 +97,7 @@ function build(options: BuildOptions = {}): Built {
     // is not what these tests exercise.
     store: store as unknown as RoomRecordStore,
     registry,
-    runtime,
+    runtime: memberRuntime,
     lease: { fence: (_key, op) => op(), read: () => undefined },
     turnLog,
     members: () => members,
@@ -98,7 +108,19 @@ function build(options: BuildOptions = {}): Built {
     toolHost,
   });
   runtime.bind(service, turnLog, tools);
-  return { service, runtime, turnLog, store, tools };
+  return {
+    service,
+    runtime,
+    memberRuntime,
+    turnLog,
+    store,
+    tools,
+    toolOf: (agentId, name) => {
+      const found = toolsByAgent.get(agentId)?.find(definition => definition.name === name);
+      if (!found) throw new Error(`no ${name} tool on ${agentId}'s latest turn`);
+      return found;
+    },
+  };
 }
 
 function agentOf(id: string, systemPrompt: string): Agent {
@@ -221,6 +243,126 @@ class FakeTurnLog implements TurnLog {
   }
 }
 
+/** An event as the Room tools hand it to the member: no author object. */
+interface ToolEvent {
+  seq: number;
+  from: string;
+  to?: string[];
+  kind: string;
+  body: string;
+}
+
+/**
+ * A member that behaves: it reads its room facts and inbox and follows the
+ * count-off rule — say my number once the one before mine is on the record,
+ * otherwise end the turn without a Room tool.
+ */
+function countOffDecision(bodies: string[], seat: number): string | undefined {
+  const numbers = bodies.map(body => body.trim()).filter(body => /^\d+$/.test(body)).map(Number);
+  if (numbers.length === 0) return seat === 1 ? '1' : undefined;
+  return Math.max(...numbers) === seat - 1 ? String(seat) : undefined;
+}
+
+/** The member's own seat, read out of the facts block the service assembled. */
+function seatOf(harness: Harness): number {
+  const facts = harness.blocks.map(block => ('text' in block ? block.text : '')).join('\n');
+  const match = facts.match(/member (\d+) of/);
+  if (!match) throw new Error('no seat number in the room facts');
+  return Number(match[1]!);
+}
+
+/** The bodies on the transcript the activation carried in. */
+function transcriptBodies(harness: Harness): string[] {
+  const text = harness.blocks.map(block => ('text' in block ? block.text : '')).join('\n');
+  return [...text.matchAll(/\[seq \d+\] @[^:]*: (.*)$/gm)].map(match => match[1]!);
+}
+
+/**
+ * The scheduler a chain test drives through: the runtime's Inbox over one
+ * member — one activation at a time, a wake during one collapses into exactly
+ * one further activation — running each turn to the behaviour's end. What the
+ * real Inbox does for wakes, this does for the whole chain, so a walkthrough
+ * test can let a round run itself out.
+ */
+class ChainRuntime implements RoomMemberRuntime {
+  readonly wakes: string[] = [];
+  private readonly running = new Set<RoomLabAgentId>();
+  private readonly pending = new Set<RoomLabAgentId>();
+  private service: RoomService | undefined;
+  private turnLog: FakeTurnLog | undefined;
+  private toolOf: ((agentId: string, name: string) => ToolDefinition) | undefined;
+
+  constructor(
+    private readonly decide: (agentId: RoomLabAgentId, harness: Harness, read: string[]) =>
+      { body: string; addressedTo?: string[] } | undefined,
+  ) {}
+
+  bind(
+    service: RoomService,
+    turnLog: FakeTurnLog,
+    toolOf: (agentId: string, name: string) => ToolDefinition,
+  ): void {
+    this.service = service;
+    this.turnLog = turnLog;
+    this.toolOf = toolOf;
+  }
+
+  /** Resolves once every wake has run to its end, pending re-runs included. */
+  async settled(): Promise<void> {
+    while (this.running.size > 0 || this.pending.size > 0) {
+      await this.turnLog!.drain();
+    }
+    await this.turnLog!.drain();
+  }
+
+  wake(key: string): void {
+    this.wakes.push(key);
+    const agentId = agentIdOf(key);
+    if (this.running.has(agentId)) {
+      this.pending.add(agentId);
+      return;
+    }
+    void this.runTurn(agentId);
+  }
+
+  private async runTurn(agentId: RoomLabAgentId): Promise<void> {
+    this.running.add(agentId);
+    try {
+      const harness = await this.service!.activate(agentId);
+      const speak = this.toolOf!(agentId, 'room_speak');
+      const read = this.toolOf!(agentId, 'room_read');
+      // The RFC's HELD rule: a held speak reads the newer events and decides
+      // again inside the same turn, until it posts, passes, or the tool closes.
+      const readBodies: string[] = [];
+      for (let attempt = 0; attempt <= HELD_LIMIT; attempt += 1) {
+        const decision = this.decide(agentId, harness, readBodies);
+        if (!decision) break;
+        const result = await speak.handler(
+          { body: decision.body, addressedTo: decision.addressedTo ?? [] },
+          { sessionId: undefined },
+        ) as { posted?: { seq: number }; held?: { newer: ToolEvent[] }; error?: string };
+        if (result.posted || result.error) break;
+        if (!result.held) break;
+        const slice = await read.handler(
+          { afterSeq: Math.max(0, (result.held.newer[0]?.seq ?? 1) - 1) },
+          { sessionId: undefined },
+        ) as { events: ToolEvent[] };
+        readBodies.push(...slice.events.map(event => event.body));
+      }
+      harness.hooks?.afterTurn?.({ stopReason: 'end_turn', token: TOKEN });
+      await this.turnLog!.drain();
+    } finally {
+      this.running.delete(agentId);
+    }
+    if (this.pending.delete(agentId)) await this.runTurn(agentId);
+  }
+}
+
+function agentIdOf(key: string): RoomLabAgentId {
+  const marker = ':member:';
+  return key.slice(key.lastIndexOf(marker) + marker.length) as RoomLabAgentId;
+}
+
 describe('RoomService dispatch', () => {
   it('wakes every seated member for a human message, once per transport message id', async () => {
     const h = build();
@@ -289,6 +431,137 @@ describe('RoomService dispatch', () => {
     const h = build({ manual: true, settings: { serial: true }, members: ['opencode', 'claude'] });
     await h.service.sendMessage('换个顺序');
     expect(h.runtime.wakes).toEqual([keyOf('opencode')]);
+  });
+});
+
+describe('RoomService dispatch on member posts', () => {
+  /** A member that follows the count-off rule: say my number once the one before mine is in. */
+  function countOffChain(): ChainRuntime {
+    return new ChainRuntime((_agentId, harness, read) => {
+      const body = countOffDecision([...transcriptBodies(harness), ...read], seatOf(harness));
+      return body ? { body } : undefined;
+    });
+  }
+
+  it('wakes the seated peers when a member posts, and nobody when it passes', async () => {
+    const h = build({ manual: true });
+    await h.service.sendMessage('这个接口为什么偶发 502？');
+    expect(h.runtime.wakes).toEqual([keyOf('claude'), keyOf('codex'), keyOf('opencode')]);
+
+    // Claude posts: the same dispatch an admit runs — shouldWake over the
+    // posted event, budget charged, every peer but the author woken.
+    const claude = await h.runtime.activated(keyOf('claude'));
+    const posted = await claude.speakTool()
+      .handler({ body: '上游超时，重试没退避', addressedTo: [] }, { sessionId: undefined });
+    expect(posted).toMatchObject({ posted: { seq: 2 } });
+    expect(h.runtime.wakes.slice(3)).toEqual([keyOf('codex'), keyOf('opencode')]);
+
+    // Codex has nothing to add: a pass writes no event, so it wakes nobody.
+    const codex = await h.runtime.activated(keyOf('codex'));
+    await codex.end();
+    expect(h.runtime.wakes).toHaveLength(5);
+  });
+
+  it('applies the addressed filter to a member post too', async () => {
+    const h = build({ manual: true, settings: { wake: 'addressed' } });
+    await h.service.sendMessage('这个接口为什么偶发 502？');
+    const claude = await h.runtime.activated(keyOf('claude'));
+    await claude.speakTool()
+      .handler({ body: '先看这个，@codex', addressedTo: ['codex'] }, { sessionId: undefined });
+    expect(h.runtime.wakes.slice(3)).toEqual([keyOf('codex')]);
+  });
+
+  it('reproduces the count-off walkthrough on broadcast: nine turns, three posts, depth 3', async () => {
+    const chain = countOffChain();
+    const h = build({ runtime: chain });
+    chain.bind(h.service, h.turnLog, h.toolOf);
+    await h.service.sendMessage('报数');
+    await chain.settled();
+
+    // The record holds exactly the walkthrough: each seat reads its
+    // predecessor's number and reports its own, one depth under its trigger.
+    const events = await eventsOf(h.store);
+    expect(events.map(event => [event.author.id, event.body, event.wakeDepth])).toEqual([
+      ['director', '报数', 0],
+      ['claude', '1', 1],
+      ['codex', '2', 2],
+      ['opencode', '3', 3],
+    ]);
+    // Three admit wakes, two per post: at most nine turns. The count can sit
+    // under nine because a wake landing during a running activation collapses
+    // into one re-run that reads both events (the runtime's Inbox rule) — two
+    // silent passes become one. The posts themselves are exactly the
+    // walkthrough's, in order and one depth under their trigger.
+    expect(h.turnLog.rows.length).toBeGreaterThanOrEqual(7);
+    expect(h.turnLog.rows.length).toBeLessThanOrEqual(9);
+    expect(h.turnLog.rows.filter(row => row.outcome === 'posted').map(row => [row.agentId, row.postedSeq]))
+      .toEqual([['claude', 2], ['codex', 3], ['opencode', 4]]);
+    expect(h.turnLog.rows.every(row => row.outcome === 'posted' || row.outcome === 'passed')).toBe(true);
+    // The default budget n(n+1) = 12 covers the nine: no notice anywhere.
+    expect(events.filter(event => event.kind === 'control-plane')).toEqual([]);
+  });
+
+  it('reproduces the count-off on serial: five turns, one activation at a time', async () => {
+    const chain = countOffChain();
+    const h = build({ runtime: chain, settings: { serial: true } });
+    chain.bind(h.service, h.turnLog, h.toolOf);
+    await h.service.sendMessage('报数');
+    await chain.settled();
+
+    const events = await eventsOf(h.store);
+    expect(events.map(event => [event.author.id, event.body, event.wakeDepth])).toEqual([
+      ['director', '报数', 0],
+      ['claude', '1', 1],
+      ['codex', '2', 2],
+      ['opencode', '3', 3],
+    ]);
+    // The admit wakes the first seat; each post queues the rest behind the
+    // running turn, deduplicated, and the chain walks the seats in order.
+    expect(chain.wakes).toEqual([
+      keyOf('claude'),
+      keyOf('codex'),
+      keyOf('opencode'),
+      keyOf('claude'),
+      keyOf('codex'),
+    ]);
+    expect(h.turnLog.rows.map(row => [row.agentId, row.outcome])).toEqual([
+      ['claude', 'posted'],
+      ['codex', 'posted'],
+      ['opencode', 'posted'],
+      ['claude', 'passed'],
+      ['codex', 'passed'],
+    ]);
+  });
+
+  it('stops the chain with one notice when the round budget runs out mid-chain', async () => {
+    const chain = countOffChain();
+    const h = build({ runtime: chain, settings: { roundBudget: 4 } });
+    chain.bind(h.service, h.turnLog, h.toolOf);
+    await h.service.sendMessage('报数');
+    await chain.settled();
+
+    // The admit charged three; the post's dispatch spends the fourth on codex
+    // and refuses opencode. Codex's report still starts — it was charged —
+    // but the dispatch it causes finds the round spent and wakes nobody more.
+    expect(chain.wakes).toEqual([
+      keyOf('claude'),
+      keyOf('codex'),
+      keyOf('opencode'),
+      keyOf('codex'),
+    ]);
+    expect(h.turnLog.rows).toHaveLength(4);
+    expect(h.turnLog.rows.filter(row => row.outcome === 'posted').map(row => row.agentId))
+      .toEqual(['claude', 'codex']);
+    // The notice is itself a record event: it lands between the two counts.
+    const events = await eventsOf(h.store);
+    expect(events.map(event => [event.kind, event.author.id])).toEqual([
+      ['human', 'director'],
+      ['posted', 'claude'],
+      ['control-plane', 'room'],
+      ['posted', 'codex'],
+    ]);
+    expect(events.filter(event => event.kind === 'control-plane').map(event => event.body))
+      .toEqual([copy.say.roundBudgetReached]);
   });
 });
 
