@@ -4,10 +4,12 @@ import {
   Room,
   RoomStreamService,
   sessionKey,
+  type AgentId,
   type AgentSession,
   type AgentSessionId,
   type AdmitResult,
   type AdmitRoomEvent,
+  type RoomAuthor,
   type RoomEvent,
   type RoomId,
   type RoomSeq,
@@ -177,7 +179,11 @@ export class SqliteRoomStreamStore {
   private readonly unitOfWork: SqliteRoomUnitOfWork;
   private readonly service: RoomStreamService;
 
-  constructor(db: DatabaseSync, roomId: RoomId, now: () => number = Date.now) {
+  constructor(
+    db: DatabaseSync,
+    private readonly roomId: RoomId,
+    private readonly now: () => number = Date.now,
+  ) {
     this.unitOfWork = new SqliteRoomUnitOfWork(db, roomId);
     this.service = new RoomStreamService(this.unitOfWork, now);
   }
@@ -212,6 +218,39 @@ export class SqliteRoomStreamStore {
 
   pass(input: PassCommand): Promise<PassResult> {
     return this.service.pass(input);
+  }
+
+  /**
+   * Appends an endpoint-authored member post (RFC 0015 room_dm): the write the
+   * private-room gateway makes in a child room. Its depth names the parent
+   * trigger's plus one rather than an in-room trigger's, it never HELDs, and
+   * it moves no cursor — the room's own protocol takes over from the next
+   * event on. `messageId` goes in without the seq; the record stamps it, the
+   * way speak's own ids do.
+   */
+  async post(input: {
+    messageId: string;
+    author: RoomAuthor;
+    body: string;
+    addressedTo: AgentId[];
+    wakeDepth: number;
+  }): Promise<RoomEvent> {
+    return this.unitOfWork.withRoom(this.roomIdOf(), room => room.post(
+      {
+        messageId: `${input.messageId}:${room.head + 1}`,
+        author: input.author,
+        kind: 'posted',
+        body: input.body,
+        origin: 'endpoint',
+        addressedTo: [...input.addressedTo],
+        wakeDepth: input.wakeDepth,
+      },
+      new Date(this.now()).toISOString(),
+    ));
+  }
+
+  private roomIdOf(): RoomId {
+    return { tenantId: this.roomId.tenantId, conversationId: this.roomId.conversationId };
   }
 }
 

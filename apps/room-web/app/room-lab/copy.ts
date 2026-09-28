@@ -77,6 +77,7 @@ export const copy = {
     joinable: '可加入',
     thread: '房间对话',
     roomName: '房间名',
+    privateRoomTitle: (a: string, b: string) => `${a} ↔ ${b}`,
     goal: '目标',
     optional: '可选',
     human: '你',

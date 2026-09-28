@@ -1,6 +1,8 @@
 import type {
   AgentSession,
   AgentSessionId,
+  RoomAuthor,
+  RoomEvent,
   RoomStreamStore,
   SliceBudget,
 } from '@rivus/agent-room';
@@ -59,7 +61,7 @@ export interface TurnLog {
 }
 
 /**
- * The control plane's ToolServer, narrowed to what a turn needs: the two Room
+ * The control plane's ToolServer, narrowed to what a turn needs: the Room
  * tool definitions hosted behind a random per-turn token.
  */
 export type RoomToolHost = (input: {
@@ -97,18 +99,73 @@ export type { RoomStreamStore, AgentRegistry };
 
 /**
  * The record plus the session side-channels the turn reads it with: the
- * cursor a member's inbox starts after, and the clear a reset performs. The
- * control plane's `LeaseManager` satisfies `RoomLeases`; it is narrowed here
- * so a test can stand in for it.
+ * cursor a member's inbox starts after, the clear a reset performs, and the
+ * endpoint-authored post the private-room gateway makes. The control plane's
+ * `LeaseManager` satisfies `RoomLeases`; it is narrowed here so a test can
+ * stand in for it.
  */
 export interface RoomRecordStore extends RoomStreamStore {
   ensureSession(id: AgentSessionId): AgentSession;
   inspectSession(id: AgentSessionId): AgentSession | undefined;
   clear(): void;
+  post(input: {
+    messageId: string;
+    author: RoomAuthor;
+    body: string;
+    addressedTo: RoomLabAgentId[];
+    wakeDepth: number;
+  }): Promise<RoomEvent>;
 }
 
 /** The lease half the dispatcher's writes run under. */
 export interface RoomLeases {
   fence<T>(key: string, op: () => Promise<T>): Promise<T>;
   read(key: string): LeaseRecord | undefined;
+}
+
+/**
+ * One round's home: the room whose human event opened it. A round spans the
+ * private rooms opened inside it (RFC 0015), so a child room charges its
+ * budget and reads its ceiling here instead of keeping its own.
+ */
+export interface RoomRoundLedger {
+  /** Counts one turn against the round; false once the round budget is spent. */
+  charge(roundSeq: number): boolean;
+  /** The depth ceiling shouldWake measures the round's events against. */
+  ceiling(roundSeq: number): number;
+  /** The round's one budget-exhausted notice, posted into this room's record. */
+  postBudgetNotice(roundSeq: number): void;
+}
+
+/**
+ * Which room and seq a round is rooted at. A dm post's own room when it opens
+ * a round there; the parent room a `dm:` message id names when the round is
+ * inherited (RFC 0015: the round is the causal tree under one human event,
+ * wherever its events land).
+ */
+export interface RoomRound {
+  roomId: string;
+  seq: number;
+}
+
+/**
+ * The private-room gateway behind the room_dm tool (RFC 0015): finds or opens
+ * the pair's child room, posts the body there at the trigger's depth plus one,
+ * and hands the post to the child room's dispatcher. The host owns it, because
+ * the child room is outside this service's own record.
+ */
+export interface RoomDmGateway {
+  open(input: {
+    parentRoomId: string;
+    from: RoomLabAgentId;
+    to: RoomLabAgentId;
+    body: string;
+    /** The waking event's depth; the child post carries one more. */
+    triggerDepth: number;
+    /** The parent event whose activation opened or reused the room. */
+    triggerSeq: number;
+    /** The round the exchange's turns charge, rooted in this room. */
+    roundRoomId: string;
+    roundSeq: number;
+  }): Promise<{ roomId: string; seq: number }>;
 }

@@ -14,7 +14,8 @@ export function defaultWorkRoot(): string {
   return join(defaultRoomHome(), 'work');
 }
 
-function newRoomIdentity(): string {
+/** One fresh room id, the desk's and a private room's alike. */
+export function newRoomIdentity(): string {
   return `r_${randomBytes(5).toString('hex')}`;
 }
 

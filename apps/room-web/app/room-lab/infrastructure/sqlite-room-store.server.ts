@@ -48,7 +48,8 @@ export class SqliteRoomStore {
 
   loadCatalog(): RoomCatalog {
     const rooms = this.db.prepare(`
-      SELECT id, title, goal, created_at, updated_at, last_opened_at, wake, serial, cwd
+      SELECT id, title, goal, created_at, updated_at, last_opened_at, wake, serial, cwd,
+             parent_room_id, opened_by, opened_at_seq
       FROM rooms
     `).all() as unknown as RoomRow[];
     const members = this.db.prepare(`
@@ -75,6 +76,11 @@ export class SqliteRoomStore {
       serial: Number(row.serial) === 1,
       ...(row.cwd ? { cwd: row.cwd } : {}),
       ...(row.goal ? { goal: row.goal } : {}),
+      ...(row.parent_room_id ? { parentRoomId: row.parent_room_id } : {}),
+      ...(row.opened_by ? { openedBy: row.opened_by } : {}),
+      ...(row.opened_at_seq === null || row.opened_at_seq === undefined
+        ? {}
+        : { openedAtSeq: Number(row.opened_at_seq) }),
     }));
     const lastOpenedId = this.meta('last_opened_id');
     return new RoomCatalog(records, lastOpenedId, this.agents);
@@ -138,8 +144,11 @@ export class SqliteRoomStore {
 
   private upsertRoom(room: RoomRecord): void {
     this.db.prepare(`
-      INSERT INTO rooms (id, title, goal, created_at, updated_at, last_opened_at, wake, serial, cwd)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO rooms (
+        id, title, goal, created_at, updated_at, last_opened_at, wake, serial, cwd,
+        parent_room_id, opened_by, opened_at_seq
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title = excluded.title,
         goal = excluded.goal,
@@ -147,7 +156,10 @@ export class SqliteRoomStore {
         last_opened_at = excluded.last_opened_at,
         wake = excluded.wake,
         serial = excluded.serial,
-        cwd = excluded.cwd
+        cwd = excluded.cwd,
+        parent_room_id = excluded.parent_room_id,
+        opened_by = excluded.opened_by,
+        opened_at_seq = excluded.opened_at_seq
     `).run(
       room.id,
       room.title,
@@ -158,6 +170,9 @@ export class SqliteRoomStore {
       room.wake,
       room.serial ? 1 : 0,
       room.cwd ?? null,
+      room.parentRoomId ?? null,
+      room.openedBy ?? null,
+      room.openedAtSeq ?? null,
     );
   }
 
@@ -350,6 +365,9 @@ interface RoomRow {
   wake: string;
   serial: number;
   cwd: string | null;
+  parent_room_id: string | null;
+  opened_by: string | null;
+  opened_at_seq: number | null;
 }
 
 function readJson<T>(filePath: string, fallback: T): T {

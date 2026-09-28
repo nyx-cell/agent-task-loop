@@ -22,6 +22,12 @@ export interface RoomRecord {
   serial: boolean;
   /** Where members work during a turn; undefined means the room's own directory. */
   cwd?: string;
+  /** Set on a private room: the room it was opened from (RFC 0015 Private rooms). */
+  parentRoomId?: string;
+  /** The member whose room_dm opened it; absent for a room a person created. */
+  openedBy?: RoomLabAgentId;
+  /** The parent event whose activation opened it. */
+  openedAtSeq?: number;
 }
 
 export class RoomCatalog {
@@ -81,6 +87,54 @@ export class RoomCatalog {
 
   list(): RoomRecord[] {
     return [...this.rooms].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  /**
+   * The private room one pair of members already shares under a parent, the one
+   * a second room_dm reuses (RFC 0015). The pair matches regardless of who
+   * opened it, so either member finds the same room.
+   */
+  findPrivate(parentRoomId: string, memberIds: readonly RoomLabAgentId[]): RoomRecord | undefined {
+    const pair = pairKey(memberIds);
+    return this.rooms.find(room =>
+      room.parentRoomId === parentRoomId
+      && room.memberIds.length === 2
+      && pairKey(room.memberIds) === pair,
+    );
+  }
+
+  /**
+   * Opens the private room one pair shares under a parent: an ordinary room
+   * record plus the three link fields, seated with exactly the two members. It
+   * does not take the desk's last-opened slot — the room opens under its
+   * parent, not on the desk.
+   */
+  openPrivate(input: {
+    id: string;
+    title: string;
+    parentRoomId: string;
+    openedBy: RoomLabAgentId;
+    openedAtSeq: number;
+    memberIds: readonly RoomLabAgentId[];
+    now: string;
+  }): RoomRecord {
+    this.get(input.parentRoomId);
+    if (new Set(input.memberIds).size !== 2 || input.memberIds.length !== 2) {
+      throw new RoomCatalogInvariantError('A private room seats exactly two members');
+    }
+    const lastOpenedId = this.lastOpenedId;
+    const created = this.create({
+      id: input.id,
+      title: input.title,
+      memberIds: input.memberIds,
+      now: input.now,
+    });
+    this.lastOpenedId = lastOpenedId;
+    return this.update(created.id, room => {
+      room.parentRoomId = input.parentRoomId;
+      room.openedBy = input.openedBy;
+      room.openedAtSeq = input.openedAtSeq;
+    });
   }
 
   get(id: string): RoomRecord {
@@ -180,4 +234,9 @@ function cloneRecord(room: RoomRecord): RoomRecord {
     ...room,
     memberIds: [...room.memberIds],
   };
+}
+
+/** A pair as one comparable word, order-free: the same two members, one room. */
+function pairKey(memberIds: readonly RoomLabAgentId[]): string {
+  return [...memberIds].sort().join('\n');
 }

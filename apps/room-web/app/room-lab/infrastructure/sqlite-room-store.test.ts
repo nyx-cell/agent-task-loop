@@ -251,6 +251,44 @@ describe('sqlite Room persistence', () => {
     expect(store.db.prepare('PRAGMA busy_timeout').get()).toMatchObject({ timeout: 5000 });
   });
 
+  it('keeps a private room\'s link to its parent across a reopen', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'rivus-room-web-'));
+    const store = SqliteRoomStore.open(root);
+    const catalog = store.loadCatalog();
+    catalog.create({ id: 'r_cafecafeca', title: '大房间', now: '2026-09-06T01:00:00.000Z' });
+    store.saveRoom(catalog.get('r_cafecafeca'));
+    const opened = catalog.openPrivate({
+      id: 'r_dedededede',
+      title: 'claude ↔ codex',
+      parentRoomId: 'r_cafecafeca',
+      openedBy: 'claude',
+      openedAtSeq: 3,
+      memberIds: ['claude', 'codex'],
+      now: '2026-09-06T02:00:00.000Z',
+    });
+    store.saveRoom(opened);
+
+    // A settings save on the child writes the row again; the link survives it
+    // and the reopen, which is what the next room_dm reuses.
+    store.saveRoom({
+      ...catalog.get('r_dedededede'),
+      serial: true,
+    });
+    const reopened = SqliteRoomStore.open(root).loadCatalog();
+    expect(reopened.findPrivate('r_cafecafeca', ['codex', 'claude'])).toMatchObject({
+      id: 'r_dedededede',
+      parentRoomId: 'r_cafecafeca',
+      openedBy: 'claude',
+      openedAtSeq: 3,
+      serial: true,
+    });
+
+    // The sidebar nests the child under its parent, titled by its members.
+    const view = new RoomLabHost(SqliteRoomStore.open(root), probeReadyBinding).catalogView();
+    expect(view.map(room => room.id)).toEqual(['r_cafecafeca']);
+    expect(view[0]?.children?.map(child => child.id)).toEqual(['r_dedededede']);
+  });
+
   it('imports a legacy JSON catalog into sqlite once', async () => {
     const root = mkdtempSync(join(tmpdir(), 'rivus-room-web-'));
     mkdirSync(join(root, 'rooms', 'r_aaaaaaaaaa'), { recursive: true });

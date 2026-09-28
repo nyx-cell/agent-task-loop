@@ -127,6 +127,8 @@ export interface RoomCatalogItemView {
   updatedAt: string;
   lastLine?: string;
   memberCount: number;
+  /** The private rooms opened from this one, in creation order. */
+  children?: RoomCatalogItemView[];
 }
 
 export interface AgentDeskSeat {

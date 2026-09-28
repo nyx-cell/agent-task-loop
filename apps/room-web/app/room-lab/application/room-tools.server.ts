@@ -18,6 +18,8 @@ export interface RoomTurnHandle {
   roomId: RoomId;
   /** The human event that opened the round this turn belongs to. */
   roundSeq: number;
+  /** Set when the round is rooted in another room — a dm post's round (RFC 0015). */
+  roundRoomId?: string;
   /** The record head this turn started at; a post's wake depth is its plus one. */
   triggerSeq: RoomSeq;
   readUpToSeq: RoomSeq;
@@ -85,6 +87,46 @@ export function roomSpeakTool(
       handle.heldCount += 1;
       if (handle.heldCount >= HELD_LIMIT) handle.closed = true;
       return { held: { newer: result.newer.map(toToolEvent) } };
+    },
+  };
+}
+
+/**
+ * The private-room write point (RFC 0015): opens or reuses the child room the
+ * caller shares with one member and posts the body there. It does not count as
+ * the turn's post — `handle.spoke` stays untouched — so the turn may still
+ * room_speak once into its own room.
+ */
+export function roomDmTool(
+  handle: RoomTurnHandle,
+  deps: {
+    dm: (input: { to: string; body: string }) =>
+      Promise<{ roomId: string; seq: number } | { error: string }>;
+    isOpen: () => boolean;
+  },
+): ToolDefinition {
+  return {
+    name: 'room_dm',
+    description:
+      'Open, or reuse, the private room between you and one member of this room,' +
+      ' and post one message there. The answer comes back to you as a new turn in' +
+      ' that private room. Other members of this room see neither the room nor the' +
+      " message, and the call does not count as this turn's room_speak.",
+    inputSchema: {
+      to: z.string().min(1).describe('The member id to talk with, without the @.'),
+      body: z.string().min(1).max(ROOM_MESSAGE_LIMIT).describe('The message to post there, plain text.'),
+    },
+    handler: async input => {
+      if (!deps.isOpen()) return { error: 'turn-closed' };
+      const to = typeof input.to === 'string' ? input.to.trim() : '';
+      if (!to) return { error: 'to-required' };
+      const body = typeof input.body === 'string' ? input.body.trim() : '';
+      if (!body) return { error: 'body-required' };
+      if (body.length > ROOM_MESSAGE_LIMIT) return { error: 'body-too-long' };
+      if (to === handle.agentId) return { error: 'dm-self' };
+      const result = await deps.dm({ to, body });
+      if ('error' in result) return result;
+      return { dm: { roomId: result.roomId, seq: result.seq } };
     },
   };
 }

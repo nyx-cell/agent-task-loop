@@ -34,15 +34,19 @@ import { ROOM_MESSAGE_LIMIT, parseRoomMessage } from '../domain/room-message';
 import {
   TURN_BUDGET,
   type AgentDescriptors,
+  type RoomDmGateway,
   type RoomLeases,
   type RoomMemberRuntime,
   type RoomMembers,
   type RoomRecordStore,
+  type RoomRound,
+  type RoomRoundLedger,
   type RoomSettingsReader,
   type RoomToolHost,
   type TurnLog,
 } from './ports';
-import { roomSpeakTool, roomReadTool, type RoomTurnHandle } from './room-tools.server';
+import { roomSpeakTool, roomReadTool, roomDmTool, type RoomTurnHandle } from './room-tools.server';
+import { dmRoundOf } from './room-dm.server';
 import { defaultRoomHome } from '../infrastructure/room-home.server';
 
 /** Every ACP session this endpoint opens belongs to one runtime generation. */
@@ -92,13 +96,27 @@ export interface RoomServiceOptions {
   /** Where per-room work directories live; defaults to this machine's home. */
   workRoot?: () => string;
   toolHost?: RoomToolHost;
+  /** The private-room gateway behind the room_dm tool; the host owns it. */
+  dm?: RoomDmGateway;
+  /** Set on a private room: what the turn's facts call the room it hangs under. */
+  parentTitle?: () => string;
+  /**
+   * The round ledgers of the other rooms a dm root may name. A child room
+   * charges its inherited rounds there (RFC 0015: a round spans its children).
+   */
+  ledgerOf?: (roomId: string) => RoomRoundLedger;
+  /**
+   * The rooms hanging under this one, so a round's lazy budget seed counts
+   * the turns their members already spent on it.
+   */
+  childRooms?: () => readonly string[];
 }
 
 /**
  * The endpoint's dispatcher and turn assembly (RFC 0015): `admit` computes the
  * wake set and calls `runtime.wake`, the runtime answers with `activate` —
  * which builds the turn's Harness: the member's prompt, the room facts, the
- * inbox, the two Room tools, the permission policy — and `afterTurn` passes
+ * inbox, the three Room tools, the permission policy — and `afterTurn` passes
  * when nothing was spoken and writes the turn log. No state is kept between
  * turns beyond the round budgets, so there is no workspace snapshot to persist.
  */
@@ -107,13 +125,18 @@ export class RoomService {
   private revision = 0;
   private readonly rounds = new Map<number, RoundBudgetState>();
   private readonly budgetNotices = new Set<number>();
-  /** The serial switch's queue: the rest of a round's woken set, in seat order. */
-  private readonly serialQueues = new Map<number, RoomLabAgentId[]>();
+  /** The serial switch's queues: the rest of a round's woken set, in seat order. */
+  private readonly serialQueues = new Map<string, { round: RoomRound; queue: RoomLabAgentId[] }>();
   private readonly openTurns = new Map<RoomLabAgentId, OpenTurn>();
   /** Members whose running turn has already called a tool. */
   private readonly toolCallSeen = new Set<RoomLabAgentId>();
 
   constructor(private readonly options: RoomServiceOptions) {}
+
+  /** This room's own id as a round root names it. */
+  private get homeRoomId(): string {
+    return this.options.roomId.conversationId;
+  }
 
   /**
    * The human admit: validate, append at depth 0 (idempotent on the transport
@@ -171,7 +194,7 @@ export class RoomService {
     const inbox = boundedInbox(unread);
     const trigger = record.events.at(-1);
     if (!trigger) throw new Error(`room ${roomId.conversationId} has no record to read`);
-    const roundSeq = this.roundOf(record.events, head);
+    const round = this.resolveRound(record.events, head);
     this.touch();
 
     const settings = this.options.settings();
@@ -181,7 +204,8 @@ export class RoomService {
         agentId,
         session,
         roomId,
-        roundSeq,
+        roundSeq: round.seq,
+        ...(round.roomId === this.homeRoomId ? {} : { roundRoomId: round.roomId }),
         triggerSeq: head,
         readUpToSeq: head,
         spoke: false,
@@ -209,6 +233,27 @@ export class RoomService {
           }),
         }),
       ];
+      if (this.options.dm) {
+        const gateway = this.options.dm;
+        tools.push(roomDmTool(turn.handle, {
+          isOpen,
+          dm: input => {
+            if (!this.options.members().includes(input.to)) {
+              return Promise.resolve({ error: 'dm-not-a-member' });
+            }
+            return gateway.open({
+              parentRoomId: roomId.conversationId,
+              from: agentId,
+              to: input.to,
+              body: input.body,
+              triggerDepth: trigger.wakeDepth,
+              triggerSeq: head,
+              roundRoomId: round.roomId,
+              roundSeq: round.seq,
+            });
+          },
+        }));
+      }
       turn.hosted = await this.options.toolHost({ agentId, tools, token: randomUUID() });
     }
 
@@ -225,6 +270,7 @@ export class RoomService {
         members: this.options.members(),
         inbox,
         trigger,
+        ...(this.options.parentTitle ? { parent: this.options.parentTitle() } : {}),
       }),
       tools: turn.hosted ? [turn.hosted.endpoint] : [],
       permissions: cwdPermissionPolicy(cwd),
@@ -291,7 +337,7 @@ export class RoomService {
 
     // The serial switch starts the next wake only now that this activation
     // ended and its writes have landed.
-    this.wakeNextInQueue(handle.roundSeq);
+    this.wakeNextInQueue({ roomId: handle.roundRoomId ?? this.homeRoomId, seq: handle.roundSeq });
   }
 
   /** A member's state for the person: derived, never stored. */
@@ -349,33 +395,55 @@ export class RoomService {
   /**
    * The dispatcher: who should look at this event, the room's wake mode and
    * budget applied, then `runtime.wake` — one at a time in seat order when the
-   * room is serial, concurrently otherwise.
+   * room is serial, concurrently otherwise. The private-room gateway calls it
+   * for the post it made in a child room; a round a dm post opened belongs to
+   * the room its message id names, and charges that room's budget (RFC 0015:
+   * a round spans the private rooms opened inside it).
    */
-  private dispatch(event: RoomEvent): void {
+  dispatch(event: RoomEvent): void {
     const seats = this.options.members();
     const settings = this.options.settings();
-    const roundSeq = event.kind === 'human' && event.wakeDepth === 0
-      ? event.seq
-      : this.roundOfCached(event.seq);
-    const ceiling = settings.depthCeiling ?? 2 * this.roundBudget(roundSeq).n;
+    const round: RoomRound = event.kind === 'human' && event.wakeDepth === 0
+      ? { roomId: this.homeRoomId, seq: event.seq }
+      : dmRoundOf(event) ?? { roomId: this.homeRoomId, seq: this.roundOfCached(event.seq) };
+    const local = round.roomId === this.homeRoomId;
+    const ceiling = local ? this.ceiling(round.seq) : this.roundLedger(round).ceiling(round.seq);
     let wanted = seats.filter(memberId => shouldWake({ event, memberId, ceiling }));
     if (settings.wake === 'addressed' && event.addressedTo.length > 0) {
       wanted = wanted.filter(memberId => event.addressedTo.includes(memberId));
     }
     if (settings.serial) {
-      const queue = this.serialQueues.get(roundSeq) ?? [];
-      queue.push(...wanted);
-      this.serialQueues.set(roundSeq, queue);
-      this.wakeNextInQueue(roundSeq);
+      const key = roundKey(round);
+      const entry = this.serialQueues.get(key) ?? { round, queue: [] };
+      entry.queue.push(...wanted);
+      this.serialQueues.set(key, entry);
+      this.wakeNextInQueue(round);
       return;
     }
     for (const memberId of wanted) {
-      if (!this.chargeTurn(roundSeq)) {
-        this.postBudgetNotice(roundSeq);
+      if (!this.chargeRound(round)) {
+        this.notifyRound(round);
         return;
       }
       this.options.runtime.wake(runtimeKey(this.options.roomId.conversationId, memberId));
     }
+  }
+
+  /** The round ledger of the room a round is rooted in; this room for its own. */
+  private roundLedger(round: RoomRound): RoomRoundLedger {
+    if (round.roomId === this.homeRoomId) return this;
+    if (!this.options.ledgerOf) {
+      throw new Error(`room ${this.homeRoomId} has no ledger for the round in ${round.roomId}`);
+    }
+    return this.options.ledgerOf(round.roomId);
+  }
+
+  private chargeRound(round: RoomRound): boolean {
+    return this.roundLedger(round).charge(round.seq);
+  }
+
+  private notifyRound(round: RoomRound): void {
+    this.roundLedger(round).postBudgetNotice(round.seq);
   }
 
   /**
@@ -383,18 +451,19 @@ export class RoomService {
    * wake is issued from the previous turn's `afterTurn`, so it starts only
    * once that activation's writes have landed.
    */
-  private wakeNextInQueue(roundSeq: number): void {
-    const queue = this.serialQueues.get(roundSeq);
-    if (!queue || queue.length === 0) {
-      this.serialQueues.delete(roundSeq);
+  private wakeNextInQueue(round: RoomRound): void {
+    const key = roundKey(round);
+    const entry = this.serialQueues.get(key);
+    if (!entry || entry.queue.length === 0) {
+      this.serialQueues.delete(key);
       return;
     }
-    if (!this.chargeTurn(roundSeq)) {
-      this.serialQueues.delete(roundSeq);
-      this.postBudgetNotice(roundSeq);
+    if (!this.chargeRound(entry.round)) {
+      this.serialQueues.delete(key);
+      this.notifyRound(entry.round);
       return;
     }
-    const next = queue.shift()!;
+    const next = entry.queue.shift()!;
     this.options.runtime.wake(runtimeKey(this.options.roomId.conversationId, next));
   }
 
@@ -413,11 +482,14 @@ export class RoomService {
   private roundBudget(roundSeq: number): RoundBudgetState {
     let state = this.rounds.get(roundSeq);
     if (!state) {
+      const rooms = [this.homeRoomId, ...(this.options.childRooms?.() ?? [])];
       state = {
         n: this.options.members().length,
-        turns: this.options.turnLog
-          .listByRoom(this.options.roomId.conversationId)
-          .filter(turn => turn.roundSeq === roundSeq).length,
+        turns: rooms.reduce(
+          (count, roomId) => count
+            + this.options.turnLog.listByRoom(roomId).filter(turn => turn.roundSeq === roundSeq).length,
+          0,
+        ),
       };
       this.rounds.set(roundSeq, state);
     }
@@ -431,21 +503,27 @@ export class RoomService {
   }
 
   /**
-   * Counts one turn against its round's budget, and answers whether the wake
-   * may start. The count happens here, synchronously before `runtime.wake`:
-   * concurrent wakes never pass through `activate` before the rest of the
-   * dispatch loop has run, so a count taken there would always read zero. A
-   * wake that collapses into a pending flag still spent its charge — the
-   * budget is a cost ceiling, not an exact ledger.
+   * This room as the ledger child rooms charge (RFC 0015): counts one turn
+   * against the round, and answers whether the wake may start. The count
+   * happens synchronously before `runtime.wake`: concurrent wakes never pass
+   * through `activate` before the rest of the dispatch loop has run, so a
+   * count taken there would always read zero. A wake that collapses into a
+   * pending flag still spent its charge — the budget is a cost ceiling, not an
+   * exact ledger.
    */
-  private chargeTurn(roundSeq: number): boolean {
+  charge(roundSeq: number): boolean {
     if (!this.budgetAllows(roundSeq)) return false;
     this.roundBudget(roundSeq).turns += 1;
     return true;
   }
 
+  /** The round's depth ceiling here: the room's own setting, else the `2n` default. */
+  ceiling(roundSeq: number): number {
+    return this.options.settings().depthCeiling ?? 2 * this.roundBudget(roundSeq).n;
+  }
+
   /** The budget's one notice per round; a person's next message opens a new one. */
-  private postBudgetNotice(roundSeq: number): void {
+  postBudgetNotice(roundSeq: number): void {
     if (this.budgetNotices.has(roundSeq)) return;
     this.budgetNotices.add(roundSeq);
     void this.options.store
@@ -460,14 +538,21 @@ export class RoomService {
       .then(() => this.touch());
   }
 
-  /** The human event that opened the round `head` sits in. */
-  private roundOf(events: RoomEvent[], head: RoomSeq): number {
+  /**
+   * The round `head` sits in: the nearest human root at or below it, or — in a
+   * private room — the round the nearest dm root names (RFC 0015). Events
+   * above the newest root belong to that root's round, wherever the root's
+   * room is.
+   */
+  private resolveRound(events: RoomEvent[], head: RoomSeq): RoomRound {
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const event = events[index]!;
       if (event.seq > head) continue;
-      if (event.kind === 'human') return event.seq;
+      if (event.kind === 'human') return { roomId: this.homeRoomId, seq: event.seq };
+      const dm = dmRoundOf(event);
+      if (dm) return dm;
     }
-    return 0;
+    return { roomId: this.homeRoomId, seq: 0 };
   }
 
   /** Cached round lookup for an event this service has already read. */
@@ -560,10 +645,13 @@ function turnBlocks(input: {
   members: readonly RoomLabAgentId[];
   inbox: RoomEvent[];
   trigger: RoomEvent;
+  /** Set in a private room: the title of the room it was opened from. */
+  parent?: string;
 }): ContentBlock[] {
   const facts =
     `You are @${input.agentId} (${input.label}), member ${input.seatIndex} of ${input.seatCount}` +
     ` in room "${input.roomTitle}".` +
+    (input.parent ? ` This is a private room under "${input.parent}".` : '') +
     ` Members in seat order: ${input.members.map(member => `@${member}`).join(', ')}.` +
     ` You were woken by seq ${input.trigger.seq} from @${input.trigger.author.id}.`;
   const transcript = input.inbox.length === 0
@@ -571,8 +659,9 @@ function turnBlocks(input: {
     : input.inbox.map(event => inboxLine(event, input.agentId)).join('\n');
   const instruction =
     'Read first. If you have something to add, call room_speak once.' +
-    ' If not, end your turn without calling it.' +
-    ' Text you print without room_speak is not sent.';
+    ' To settle something with one member alone, call room_dm instead.' +
+    ' If not, end your turn without calling either.' +
+    ' Text you print without a Room tool is not sent.';
   return [
     { type: 'text', text: facts },
     { type: 'text', text: transcript },
@@ -644,4 +733,9 @@ function lastTurnFor(turns: RoomTurnView[], agentId: RoomLabAgentId): RoomTurnVi
     if (turn.agentId === agentId && turn.outcome) return turn;
   }
   return undefined;
+}
+
+/** Two rounds of the same seq in two rooms are two rounds; the key says whose. */
+function roundKey(round: RoomRound): string {
+  return `${round.roomId}#${round.seq}`;
 }

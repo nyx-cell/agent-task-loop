@@ -106,6 +106,31 @@ describe('Room workspace', () => {
     expect(screen.getByRole('textbox').getAttribute('contenteditable')).toBe('true');
   });
 
+  it('nests a private room under its parent, titled by its members', () => {
+    const state = roomFixture({
+      catalog: [{
+        id: 'r_aaaaaaaaaa',
+        title: '产品讨论',
+        updatedAt: '2026-09-06T00:00:00.000Z',
+        memberCount: 5,
+        children: [{
+          id: 'r_bbbbbbbbbb',
+          title: 'claude ↔ codex',
+          updatedAt: '2026-09-06T01:00:00.000Z',
+          memberCount: 2,
+        }],
+      }],
+    });
+    render(<RoomWorkspace state={state} pending={false} value=""
+      onValueChange={vi.fn()} onAction={vi.fn()} />);
+    // The private room is one of the person's rooms: reachable from the row of
+    // the room it was opened from.
+    const parentItem = screen.getByRole('link', { name: /产品讨论/ }).closest('li');
+    expect(parentItem).toBeTruthy();
+    const childLink = within(parentItem as HTMLElement).getByRole('link', { name: /claude ↔ codex/ });
+    expect(childLink.getAttribute('href')).toBe('/room/r_bbbbbbbbbb');
+  });
+
   it('renders message bodies as text, not executable HTML, and names the person 你', () => {
     const { container } = render(<ol><RoomMessage event={{
       seq: 1, messageId: 'web:1', author: { kind: 'human', id: 'director' }, kind: 'human',

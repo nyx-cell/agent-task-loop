@@ -76,7 +76,7 @@ export function RoomSidebar({ rooms, currentRoomId, disabled, onCreate }: {
   const [title, setTitle] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => { if (creating) inputRef.current?.focus(); }, [creating]);
-
+  const roomCount = rooms.reduce((count, room) => count + 1 + (room.children?.length ?? 0), 0);
   return (
     <nav
       className="flex min-h-0 flex-col gap-[18px] overflow-y-auto border-r border-sidebar-border bg-sidebar text-sidebar-foreground px-2.5 py-3.5 max-[820px]:flex-row max-[820px]:items-center max-[820px]:gap-4 max-[820px]:overflow-x-auto max-[820px]:border-r-0 max-[820px]:border-b max-[820px]:py-2.5"
@@ -95,7 +95,7 @@ export function RoomSidebar({ rooms, currentRoomId, disabled, onCreate }: {
           className={navLink}
         >
           {copy.label.rooms}
-          <span className="tabular-nums text-xs text-muted-foreground">{rooms.length}</span>
+          <span className="tabular-nums text-xs text-muted-foreground">{roomCount}</span>
         </Link>
         <Link
           to="/room/agents"
@@ -148,20 +148,19 @@ export function RoomSidebar({ rooms, currentRoomId, disabled, onCreate }: {
         <ul className="m-0 flex list-none flex-col gap-0.5 p-0 max-[820px]:flex-row max-[820px]:gap-1">
           {rooms.map(room => (
             <li key={room.id} className="max-[820px]:shrink-0">
-              <Link
-                to={`/room/${room.id}`}
-                prefetch="intent"
-                preventScrollReset
-                aria-current={room.id === currentRoomId ? 'page' : undefined}
-                className="block rounded-md px-2 py-1.5 text-sidebar-foreground/75 no-underline transition-colors duration-150 hover:bg-sidebar-accent hover:text-sidebar-foreground aria-[current=page]:bg-sidebar-accent aria-[current=page]:text-sidebar-foreground max-[820px]:whitespace-nowrap"
-              >
-                <span className="block text-sm leading-snug [overflow-wrap:anywhere] max-[820px]:inline">{room.title}</span>
-                {/* Relative time is read off the clock at render; the server and the
-                    browser render seconds apart, so the two strings may differ. */}
-                <span className="mt-0.5 block text-xs leading-tight text-muted-foreground max-[820px]:hidden" suppressHydrationWarning>
-                  {copy.label.memberCount(room.memberCount)} · {formatAgo(room.updatedAt)}
-                </span>
-              </Link>
+              <RoomSidebarLink room={room} currentRoomId={currentRoomId} />
+              {room.children && room.children.length > 0 && (
+                // A private room shows under the room it was opened from, titled
+                // by its two members; the person can open and read it like any
+                // other room.
+                <ul className="m-0 mt-0.5 list-none border-l border-sidebar-border pl-2 max-[820px]:pl-0">
+                  {room.children.map(child => (
+                    <li key={child.id} className="max-[820px]:shrink-0">
+                      <RoomSidebarLink room={child} currentRoomId={currentRoomId} privateRoom />
+                    </li>
+                  ))}
+                </ul>
+              )}
             </li>
           ))}
         </ul>
@@ -172,5 +171,32 @@ export function RoomSidebar({ rooms, currentRoomId, disabled, onCreate }: {
         <span className="px-1.5">{copy.say.savedLocally}</span>
       </footer>
     </nav>
+  );
+}
+
+/** One room row: its title, how many sit in it, and when it last moved. */
+function RoomSidebarLink({ room, currentRoomId, privateRoom }: {
+  room: RoomCatalogItemView;
+  currentRoomId: string;
+  /** A room nested under its parent reads a touch quieter than the room itself. */
+  privateRoom?: boolean;
+}) {
+  return (
+    <Link
+      to={`/room/${room.id}`}
+      prefetch="intent"
+      preventScrollReset
+      aria-current={room.id === currentRoomId ? 'page' : undefined}
+      className="block rounded-md px-2 py-1.5 text-sidebar-foreground/75 no-underline transition-colors duration-150 hover:bg-sidebar-accent hover:text-sidebar-foreground aria-[current=page]:bg-sidebar-accent aria-[current=page]:text-sidebar-foreground max-[820px]:whitespace-nowrap"
+    >
+      <span className={`${privateRoom ? 'text-[13px]' : 'text-sm'} block leading-snug [overflow-wrap:anywhere] max-[820px]:inline`}>
+        {room.title}
+      </span>
+      {/* Relative time is read off the clock at render; the server and the
+          browser render seconds apart, so the two strings may differ. */}
+      <span className="mt-0.5 block text-xs leading-tight text-muted-foreground max-[820px]:hidden" suppressHydrationWarning>
+        {copy.label.memberCount(room.memberCount)} · {formatAgo(room.updatedAt)}
+      </span>
+    </Link>
   );
 }

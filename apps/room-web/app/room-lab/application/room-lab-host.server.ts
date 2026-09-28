@@ -12,6 +12,7 @@ import {
 } from '@rivus/agent-orchestration';
 import { AcpConnector, ToolServer } from '@rivus/agent-orchestration/acp';
 import { RoomService, RoomInputError } from './room-service.server';
+import { RoomDm } from './room-dm.server';
 import type { TurnLog } from './ports';
 import { createRoomRecordInput, defaultWorkRoot, nowIso } from '../infrastructure/room-home.server';
 import { SqliteRoomStore } from '../infrastructure/sqlite-room-store.server';
@@ -60,6 +61,8 @@ export class RoomLabHost {
   private readonly runtime: AgentRuntime;
   private readonly toolServer: ToolServer;
   private readonly turnLog: TurnLog;
+  /** The room_dm write path; the child rooms it opens are this host's. */
+  private readonly dm: RoomDm;
 
   constructor(
     store: SqliteRoomStore = SqliteRoomStore.open(),
@@ -85,6 +88,17 @@ export class RoomLabHost {
     });
     this.toolServer = new ToolServer();
     this.turnLog = new SqliteTurnLog(store.db);
+    this.dm = new RoomDm({
+      findPrivate: (parentRoomId, members) => this.catalog.findPrivate(parentRoomId, members),
+      openPrivate: input => {
+        const record = this.catalog.openPrivate(input);
+        this.store.saveRoom(record);
+        return record;
+      },
+      stream: roomId => this.store.stream(roomId),
+      dispatch: (roomId, event) => this.open(roomId).dispatch(event),
+      now: nowIso,
+    });
     this.runtime.onActivate(key => this.activateKey(key));
   }
 
@@ -272,9 +286,22 @@ export class RoomLabHost {
       workRoot: defaultWorkRoot,
       toolHost: ({ agentId, tools, token }) =>
         this.toolServer.hostTools({ tools, token, transport: this.toolTransport(agentId) }),
+      dm: this.dm,
+      parentTitle: this.parentTitleOf(roomId),
+      ledgerOf: ancestor => this.open(ancestor),
+      childRooms: () => this.catalog.list()
+        .filter(room => room.parentRoomId === roomId)
+        .map(room => room.id),
     });
     this.services.set(roomId, service);
     return service;
+  }
+
+  /** What a private room's turn facts call the room it was opened from. */
+  private parentTitleOf(roomId: string): (() => string) | undefined {
+    const parentId = this.catalog.get(roomId).parentRoomId;
+    if (!parentId) return undefined;
+    return () => this.catalog.get(parentId).title;
   }
 
   /**
@@ -311,17 +338,29 @@ export class RoomLabHost {
     };
   }
 
+  /**
+   * The sidebar's rooms, private rooms nested under the room they were opened
+   * from (RFC 0015). Roots keep their creation order; so do the children.
+   */
   catalogView(): RoomCatalogItemView[] {
-    return this.catalog.list().map(room => {
+    const items = new Map<string, RoomCatalogItemView>(this.catalog.list().map(room => {
       const preview = this.store.preview(room.id);
-      return {
+      return [room.id, {
         id: room.id,
         title: room.title,
         updatedAt: preview.lastAt ?? room.updatedAt,
         memberCount: room.memberIds.length,
         ...(preview.lastLine === undefined ? {} : { lastLine: preview.lastLine }),
-      };
-    });
+      }];
+    }));
+    const roots: RoomCatalogItemView[] = [];
+    for (const room of this.catalog.list()) {
+      const item = items.get(room.id)!;
+      const parent = room.parentRoomId ? items.get(room.parentRoomId) : undefined;
+      if (parent) (parent.children ??= []).push(item);
+      else roots.push(item);
+    }
+    return roots;
   }
 }
 
