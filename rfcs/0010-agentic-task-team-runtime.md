@@ -6,6 +6,7 @@
 | Date | 2026-08-25 |
 | Supercedes | Unnumbered Room draft on this PR (`0010-host-room-session-and-run.md`) |
 | Related implementation | PR 95 (`rfcs/0011-agent-orchestration.md` + `@rivus/agent-orchestration`), PR 96 (ATL `open` before start) |
+| Partially superseded | Chapter B's wake policy and the `wake-on-peer-posts` knob are replaced by RFC 0015's broadcast `shouldWake` with wake depth (implemented 2026-09-28); the rest stands |
 
 ## Summary
 

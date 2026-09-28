@@ -5,6 +5,7 @@
 | Status | Draft |
 | Date | 2026-09-06 |
 | Related | RFC 0010 (Room / occupancy kernels), RFC 0012 (domain layout), RFC 0006 (local run-time state) |
+| Partially superseded | The "Addressing" and "Send lifecycle" sections are replaced by RFC 0015's room tools and HELD-resolved-in-turn (implemented 2026-09-28); the rest stands |
 
 ## Summary
 

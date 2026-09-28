@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Draft |
+| Status | Implemented (2026-09-28) |
 | Date | 2026-09-28 |
 | Implements | RFC 0015 (agent collaboration system) |
 
