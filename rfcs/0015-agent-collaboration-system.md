@@ -985,3 +985,34 @@ members spending minutes of tool work on conversation rounds; both belong to
 the harness and the member's prompt, not to the wake mode. Revisit serial
 only after dispatch-on-post lands and real turn chains exist — there it is
 the guardrail the Risks section describes.
+
+**Addendum, 2026-09-29: dispatch-on-post has landed.** The gap in
+observation 1 is closed: a member's `room_speak` now dispatches the event it
+just posted with the admit's full semantics — `shouldWake` against the
+room's depth ceiling, the `addressed` filter, the round budget with its one
+notice, `serial`'s seat order one at a time — and `pass` still wakes nobody.
+Service-level tests now reproduce the walkthrough chains: the count-off at
+three posts with depths 1/2/3 in the posts' recorded order, five turns under
+`serial` with one activation at a time, and a chain that stops at the
+budget's notice mid-round.
+
+Live re-check the same day, one room on `broadcast` with the two adapters
+that have credit — @claude (claude-agent-acp 0.81.0), @codex (codex-acp
+1.13.0); @opencode is still out of credit and was not seated, so `n = 2` and
+the numbers are not comparable to the table above. The members did count
+this time — behavior the S5 run never showed — and the posts drove the
+chain. `turns`, wall times from the rows:
+
+| Trigger | Event | Depth | Turns it started |
+| --- | --- | --- | --- |
+| seq 1 (human) | you: 报数 | 0 | claude posted, codex posted |
+| seq 2 (@claude: 1号…) | member post | 1 | codex read it mid-turn, posted seq 3 |
+| seq 3 (@codex: 2号…) | member post | 1 | claude passed, codex passed |
+
+4 turns, 2 posts, HELD 0, wall admit → last pass 55 s (per turn: 21 s, 27 s,
+30 s, 23 s). The chain is visible in the log itself: both final passes carry
+`trigger_seq 3` — a member post woke them. Both counts landed inside the
+members' first activations (each `wake_depth 1`, both triggered by the
+admit), so this run never climbed to depth 2; the depth ladder is the
+service tests'. Token costs were not tapped this run. The serial default
+stands as decided above — one two-member round does not reopen it.
