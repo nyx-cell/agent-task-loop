@@ -1087,3 +1087,10 @@ member behavior the room cannot force — a member that works silently and
 never calls `room_speak`, and a conclusion with no wake path back to the
 parent. The mechanism under both is exactly the record's: dispatch-on-post,
 pass wakes nobody, a child wakes only its own members.
+
+Fixed after acceptance in 1e7dd98 (`fix(room-web): pass cursor lost to lease
+release race`): finding 1's pass cursor write is no longer lost — the runtime
+releases the lease only after the `afterTurn` hook's promise settles (prompt,
+afterTurn, release), so the fenced pass lands inside the held window, and a
+pass that still loses its lease now fails the turn row and the log instead of
+a swallowed conflict.
