@@ -49,7 +49,7 @@ export function RoomWorkspace({ state, pending, sending, error, value, onValueCh
   };
 
   return (
-    <div className="grid h-dvh min-h-[420px] grid-cols-[240px_minmax(0,1fr)_300px] bg-background font-sans text-foreground max-[1180px]:grid-cols-[240px_minmax(0,1fr)] max-[820px]:grid-cols-1 max-[820px]:grid-rows-[auto_minmax(0,1fr)]">
+    <div className="grid h-dvh min-h-[420px] grid-cols-[240px_minmax(0,1fr)_300px] bg-background font-sans text-foreground max-[1180px]:grid-cols-[240px_minmax(0,1fr)] max-[640px]:grid-cols-1 max-[640px]:grid-rows-[auto_minmax(0,1fr)]">
       <a
         className="fixed top-2 left-2 z-50 -translate-y-[160%] rounded-lg border border-input bg-popover px-3 py-2 text-sm text-popover-foreground shadow-card focus:translate-y-0"
         href="#room-command"
