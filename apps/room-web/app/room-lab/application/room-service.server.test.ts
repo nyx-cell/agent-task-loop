@@ -9,14 +9,23 @@ import {
   type RoomId,
 } from '@rivus/agent-room';
 import {
+  LeaseManager,
+  nodeClock,
+  nodeLiveness,
+  OrchestrationConflictError,
   runtimeKey,
   type Agent,
   type AgentRegistry,
   type FencingToken,
   type Harness,
+  type LeaseRecord,
   type ToolDefinition,
 } from '@rivus/agent-orchestration';
 import type { McpServer } from '@agentclientprotocol/sdk';
+import { RoomCatalog } from '../domain/room-catalog';
+import { SqliteRoomStore } from '../infrastructure/sqlite-room-store.server';
+import { SqliteLeaseStore } from '../infrastructure/sqlite-lease-store.server';
+import { SqliteTurnLog } from '../infrastructure/sqlite-turn-log.server';
 import { RoomService } from './room-service.server';
 import {
   HELD_LIMIT,
@@ -44,6 +53,8 @@ interface BuildOptions {
   manual?: boolean;
   /** Replaces the wake recorder wholesale: the chain tests drive turns themselves. */
   runtime?: RoomMemberRuntime;
+  /** Replaces the pass-through lease: the cursor tests fence against a real one. */
+  lease?: RoomLeases;
 }
 
 interface Built {
@@ -51,6 +62,8 @@ interface Built {
   runtime: FakeRuntime;
   /** The runtime the service actually holds: the fake, or the test's stand-in. */
   memberRuntime: RoomMemberRuntime;
+  /** The lease the service actually holds: the pass-through, or the test's. */
+  lease: RoomLeases;
   turnLog: FakeTurnLog;
   store: MemoryRoomStreamStore;
   /** The Room tool definitions of each activation, in activation order. */
@@ -91,6 +104,7 @@ function build(options: BuildOptions = {}): Built {
   const descriptors: AgentDescriptor[] = members.map(id => ({
     id, label: LABELS[id] ?? id, role: '成员', color: 1,
   }));
+  const lease = options.lease ?? { fence: (_key, op) => op(), read: () => undefined };
   const service = new RoomService({
     roomId: ROOM,
     // The memory store has no clear — reset is the sqlite store's business and
@@ -98,7 +112,7 @@ function build(options: BuildOptions = {}): Built {
     store: store as unknown as RoomRecordStore,
     registry,
     runtime: memberRuntime,
-    lease: { fence: (_key, op) => op(), read: () => undefined },
+    lease,
     turnLog,
     members: () => members,
     agents: () => descriptors,
@@ -112,6 +126,7 @@ function build(options: BuildOptions = {}): Built {
     service,
     runtime,
     memberRuntime,
+    lease,
     turnLog,
     store,
     tools,
@@ -177,7 +192,9 @@ class FakeRuntime implements RoomMemberRuntime {
     return {
       harness,
       end: async (result?: { stopReason?: string | null; error?: string }) => {
-        harness.hooks?.afterTurn?.({
+        // The real runtime awaits the hook's promise before it releases the
+        // lease; the fake has no lease, so it just waits the turn out.
+        await harness.hooks?.afterTurn?.({
           // `null` means the prompt never resolved: it must survive the round
           // trip to the timeout outcome.
           stopReason: (result && result.stopReason !== undefined ? result.stopReason : 'end_turn') as 'end_turn',
@@ -231,10 +248,10 @@ class FakeTurnLog implements TurnLog {
   }
 
   /**
-   * The service fires `afterTurn` without awaiting it; `end` drains the
-   * macrotask queue so the pass and the log row have landed before the test
+   * The chain tests drive turns through wakes, whose follow-on activations
+   * land a macrotask late; a handful of timers settles them before the test
    * asserts. (The chain is microtasks only — the fake lease and store are
-   * synchronous — so a handful of timers is always enough.)
+   * synchronous — so the timers are always enough.)
    */
   async drain(): Promise<void> {
     for (let round = 0; round < 5; round += 1) {
@@ -349,7 +366,9 @@ class ChainRuntime implements RoomMemberRuntime {
         ) as { events: ToolEvent[] };
         readBodies.push(...slice.events.map(event => event.body));
       }
-      harness.hooks?.afterTurn?.({ stopReason: 'end_turn', token: TOKEN });
+      // The real runtime awaits the hook's promise before it releases the
+      // lease; the drain below waits out the wake-followed activations.
+      await harness.hooks?.afterTurn?.({ stopReason: 'end_turn', token: TOKEN });
       await this.turnLog!.drain();
     } finally {
       this.running.delete(agentId);
@@ -677,5 +696,159 @@ describe('RoomService turns', () => {
     await codex.end({ stopReason: 'end_turn', error: 'ACP connection closed' });
     await h.turnLog.waitFor(2);
     expect(h.turnLog.rows[1]).toMatchObject({ agentId: 'codex', outcome: 'failed', error: 'ACP connection closed' });
+  });
+});
+
+describe('RoomService pass cursor', () => {
+  /**
+   * The lease as the release race sees it: a write fences only while the key
+   * is held, and every step lands in `events` for the test to read the order
+   * back. The refusal is the control plane's own conflict error, as the real
+   * `LeaseManager.fence` throws one.
+   */
+  class TurnLease implements RoomLeases {
+    readonly events: string[] = [];
+    private readonly held = new Set<string>();
+
+    fence<T>(key: string, op: () => Promise<T>): Promise<T> {
+      if (!this.held.has(key)) {
+        return Promise.reject(new OrchestrationConflictError(key));
+      }
+      this.events.push(`write:${key}`);
+      return op();
+    }
+
+    read(key: string): LeaseRecord | undefined {
+      return this.held.has(key)
+        ? { key, holderPid: 1, holderId: 'test', heartbeatAt: '' }
+        : undefined;
+    }
+
+    acquire(key: string): void {
+      this.held.add(key);
+      this.events.push(`acquire:${key}`);
+    }
+
+    release(key: string): void {
+      if (this.held.delete(key)) this.events.push(`release:${key}`);
+    }
+  }
+
+  /**
+   * One activation, run the way the runtime runs it: lease in, harness, the
+   * afterTurn hook's promise awaited, lease out — the activation order the
+   * RFC fixes.
+   */
+  async function runTurn(
+    h: Built,
+    lease: TurnLease,
+    agentId: string,
+    result?: { stopReason?: string | null; error?: string },
+  ): Promise<void> {
+    const key = keyOf(agentId);
+    lease.acquire(key);
+    const harness = await h.service.activate(agentId as RoomLabAgentId);
+    await harness.hooks?.afterTurn?.({
+      stopReason: (result?.stopReason ?? 'end_turn') as 'end_turn',
+      token: TOKEN,
+      ...(result?.error ? { error: result.error } : {}),
+    });
+    lease.release(key);
+  }
+
+  it('advances the cursor to read_up_to_seq, releasing the lease only after the pass lands', async () => {
+    const lease = new TurnLease();
+    const h = build({ manual: true, lease });
+    await h.service.sendMessage('先看记录');
+    await runTurn(h, lease, 'claude');
+
+    expect(h.store.inspectSession(sessionId('claude'))?.seenSeq).toBe(1);
+    expect(h.turnLog.rows[0]).toMatchObject({ agentId: 'claude', outcome: 'passed' });
+    // The write point ran inside the held window: acquire, pass, then release.
+    expect(lease.events).toEqual([
+      `acquire:${keyOf('claude')}`,
+      `write:${keyOf('claude')}`,
+      `release:${keyOf('claude')}`,
+    ]);
+  });
+
+  it('shows a pass that lost its lease in the turn row and the log, not silence', async () => {
+    const lease = new TurnLease();
+    const h = build({ manual: true, lease });
+    await h.service.sendMessage('先看记录');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    // The race the old release ordering caused: the lease is gone by the
+    // time the pass fences.
+    lease.acquire(keyOf('claude'));
+    const harness = await h.service.activate('claude');
+    lease.release(keyOf('claude'));
+    await harness.hooks?.afterTurn?.({ stopReason: 'end_turn', token: TOKEN });
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('pass lost for @claude'));
+    errorSpy.mockRestore();
+
+    expect(h.store.inspectSession(sessionId('claude'))?.seenSeq).toBe(0);
+    expect(h.turnLog.rows[0]).toMatchObject({ agentId: 'claude', outcome: 'failed' });
+    expect(h.turnLog.rows[0]?.error).toMatch(/already occupied/);
+  });
+});
+
+describe('RoomService pass cursor on sqlite', () => {
+  it('lands the pass on the real adapter: the cursor row agrees with read_up_to_seq', async () => {
+    const store = SqliteRoomStore.memory();
+    // The room row first: room_events carries a foreign key to it.
+    const catalog = new RoomCatalog([], undefined, store.agents);
+    catalog.create({ id: 'r_5e1ec0de5a', title: 'sqlite 房间', now: '2026-09-29T00:00:00.000Z', memberIds: ['claude'] });
+    store.saveRoom(catalog.get('r_5e1ec0de5a'));
+    const stream = store.stream('r_5e1ec0de5a');
+    const lease = new LeaseManager({
+      store: new SqliteLeaseStore(store.db),
+      clock: nodeClock,
+      identity: { pid: process.pid },
+      holderId: 'test-holder',
+      liveness: nodeLiveness,
+    });
+    const service = new RoomService({
+      roomId: { tenantId: 'local', conversationId: 'r_5e1ec0de5a' },
+      store: stream,
+      registry: {
+        get: async id => agentOf(id, ''),
+        list: async () => [agentOf('claude', '')],
+        save: async () => {},
+        remove: async () => {},
+      },
+      runtime: { wake: () => undefined },
+      lease,
+      turnLog: new SqliteTurnLog(store.db),
+      members: () => ['claude'],
+      agents: () => [{ id: 'claude', label: 'Claude', role: '成员', color: 1 }],
+      settings: () => ({ wake: 'broadcast', serial: false }),
+      roomTitle: () => 'sqlite 房间',
+      workRoot: () => mkdtempSync(join(tmpdir(), 'rivus-room-sqlite-')),
+    });
+    await service.sendMessage('sqlite 里的第一问', 'web:sqlite-pass-1');
+
+    // One activation, the way the runtime runs it: lease in, the afterTurn
+    // hook's promise awaited, lease out.
+    const key = runtimeKey('r_5e1ec0de5a', 'claude');
+    lease.acquire(key);
+    const harness = await service.activate('claude');
+    await harness.hooks?.afterTurn?.({ stopReason: 'end_turn', token: TOKEN });
+    lease.release(key);
+
+    // The rows the E2E cross-check compared: the turn row's read_up_to_seq
+    // and the session's seen_seq. The defect left them apart; they agree now.
+    const turn = store.db.prepare(`
+      SELECT read_up_to_seq, outcome, error FROM turns WHERE room_id = 'r_5e1ec0de5a'
+    `).get() as unknown as { read_up_to_seq: number; outcome: string; error: string | null };
+    const cursor = store.db.prepare(`
+      SELECT seen_seq FROM agent_sessions WHERE room_id = 'r_5e1ec0de5a' AND agent_id = 'claude'
+    `).get() as unknown as { seen_seq: number };
+    expect(Number(turn.read_up_to_seq)).toBe(1);
+    expect(Number(cursor.seen_seq)).toBe(1);
+    expect(turn.outcome).toBe('passed');
+    expect(turn.error).toBeNull();
+    // The lease row is gone: the release followed the fenced write.
+    expect(lease.read(key)).toBeUndefined();
   });
 });

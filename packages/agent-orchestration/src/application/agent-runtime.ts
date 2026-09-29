@@ -155,6 +155,8 @@ export class AgentRuntime {
     let timeoutHandle: IntervalHandle | undefined;
     let heartbeatHandle: IntervalHandle | undefined;
     let timedOut = false;
+    /** The turn's closing hook; the release in the finally waits for it. */
+    let afterTurn: Promise<void> = Promise.resolve();
     try {
       record = this.lease.acquire(key);
       agent = await this.requireAgent(key);
@@ -198,13 +200,13 @@ export class AgentRuntime {
       heartbeatHandle.unref?.();
 
       const prompt = await connection.prompt(inbox.session, blocks, controller.signal);
-      this.emitAfterTurn(harness, timedOut, prompt?.stopReason ?? null, record, undefined);
+      afterTurn = this.emitAfterTurn(harness, timedOut, prompt?.stopReason ?? null, record, undefined);
     } catch (error) {
       inbox.lastError = errorText(error);
       // A lease lost to another holder is the successor's business, not a
       // turn; everything after the harness exists is that turn's failure.
       if (harness && record && !(error instanceof OrchestrationConflictError)) {
-        this.emitAfterTurn(harness, timedOut, null, record, error);
+        afterTurn = this.emitAfterTurn(harness, timedOut, null, record, error);
       }
       if (connection) {
         // The process or session is of unknown health after a failure; the
@@ -214,8 +216,16 @@ export class AgentRuntime {
       }
     } finally {
       if (timeoutHandle) this.scheduler.clearInterval(timeoutHandle);
-      if (heartbeatHandle) this.scheduler.clearInterval(heartbeatHandle);
       unwire.forEach((unsubscribe) => unsubscribe());
+      // RFC 0015's activation order — prompt, afterTurn, release. The
+      // endpoint's afterTurn writes fenced under this lease (the pass's
+      // cursor write among them), so the release waits for it and the
+      // heartbeat keeps the lease fresh meanwhile; releasing first is how a
+      // pass lost its cursor write to the fence's holder re-read.
+      await afterTurn.catch((error: unknown) => {
+        inbox.lastError ??= errorText(error);
+      });
+      if (heartbeatHandle) this.scheduler.clearInterval(heartbeatHandle);
       if (record) this.lease.release(key);
       inbox.controller = undefined;
       inbox.activation = undefined;
@@ -245,13 +255,13 @@ export class AgentRuntime {
     return unsubscribers;
   }
 
-  private emitAfterTurn(
+  private async emitAfterTurn(
     harness: Harness,
     timedOut: boolean,
     stopReason: StopReason | null,
     record: LeaseRecord,
     error: unknown,
-  ): void {
+  ): Promise<void> {
     const token: FencingToken = {
       key: record.key,
       holderPid: record.holderPid,
@@ -264,7 +274,7 @@ export class AgentRuntime {
           token,
           ...(error !== undefined || stopReason === null ? { error: errorText(error) } : {}),
         };
-    harness.hooks?.afterTurn?.(result);
+    await harness.hooks?.afterTurn?.(result);
   }
 
   private async requireAgent(key: string): Promise<Agent> {

@@ -21,7 +21,12 @@ export interface Harness {
     onUpdate?(update: SessionUpdate): void;
     /** Vetoed before the permission answer. */
     onToolCall?(call: ToolCall): 'allow' | 'deny';
-    afterTurn?(result: TurnResult): void;
+    /**
+     * The runtime awaits a returned promise before it releases the lease, so
+     * the turn's fenced writes land inside the held window (RFC 0015: prompt,
+     * afterTurn, release).
+     */
+    afterTurn?(result: TurnResult): void | Promise<void>;
   };
   /** Files the connector drops into cwd before the session opens. */
   workspaceFiles?: Record<string, string>;

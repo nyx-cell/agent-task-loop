@@ -188,7 +188,7 @@ describe('Inbox and runtime', () => {
       onActivate: async () =>
         harness({
           hooks: {
-            afterTurn: (result) => afterTurns.push(result),
+            afterTurn: (result) => { afterTurns.push(result); },
           },
         }),
     });
@@ -200,6 +200,52 @@ describe('Inbox and runtime', () => {
       stopReason: 'end_turn',
       token: { key, holderPid: process.pid, holderId: 'runtime-holder' },
     });
+    expect(lease.read(key)).toBeUndefined();
+  });
+
+  it('releases the lease only after the afterTurn hook settles', async () => {
+    let finishAfterTurn: (() => void) | undefined;
+    const turnOver = new Promise<void>((resolve) => { finishAfterTurn = resolve; });
+    const fencedWrites: string[] = [];
+    const { runtime, lease } = await runtimeWith({
+      onActivate: async () =>
+        harness({
+          hooks: {
+            afterTurn: async () => {
+              // The endpoint's pass, fenced under the still-held lease: it
+              // must execute now, and the release must wait for this hook.
+              await lease.fence(key, async () => { fencedWrites.push('pass'); });
+              await turnOver;
+            },
+          },
+        }),
+    });
+    runtime.wake(key);
+    await vi.waitFor(() => expect(fencedWrites).toEqual(['pass']));
+
+    // The hook is still pending: the lease is ours, so the fenced write found
+    // its row and a successor could not have slipped in between.
+    expect(lease.read(key)).toBeDefined();
+    finishAfterTurn!();
+    await settled(runtime, key);
+    expect(lease.read(key)).toBeUndefined();
+  });
+
+  it('releases the lease when the afterTurn hook fails, and surfaces the failure', async () => {
+    const { runtime, lease } = await runtimeWith({
+      onActivate: async () =>
+        harness({
+          hooks: {
+            afterTurn: async () => {
+              throw new Error('pass exploded');
+            },
+          },
+        }),
+    });
+    runtime.wake(key);
+    await settled(runtime, key);
+
+    expect(runtime.lastError(key)).toMatch(/pass exploded/);
     expect(lease.read(key)).toBeUndefined();
   });
 
@@ -257,7 +303,7 @@ describe('Inbox and runtime', () => {
       onActivate: async () =>
         harness({
           hooks: {
-            afterTurn: (result) => afterTurns.push(result),
+            afterTurn: (result) => { afterTurns.push(result); },
           },
         }),
     });

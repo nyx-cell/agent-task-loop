@@ -284,9 +284,10 @@ export class RoomService {
       permissions: cwdPermissionPolicy(cwd),
       hooks: {
         onUpdate: update => this.onUpdate(agentId, update),
-        afterTurn: result => {
-          void this.afterTurn(turn, result);
-        },
+        // The promise comes back: the runtime awaits it before it releases
+        // the lease, so the pass's fenced cursor write lands inside the held
+        // window (RFC 0015: prompt, afterTurn, release).
+        afterTurn: result => this.afterTurn(turn, result),
       },
     };
     return harness;
@@ -303,25 +304,34 @@ export class RoomService {
     // Nothing spoken: the write point is pass, fenced so a lost lease lands
     // nothing. Events past what the turn read stay ahead of the cursor; the
     // pending-wake rule brings the member back for them.
+    let passError: string | undefined;
     if (!handle.spoke) {
       const wakeKey = runtimeKey(handle.roomId.conversationId, handle.agentId);
       try {
         await this.options.lease.fence(wakeKey, () =>
           this.options.store.pass({ session: handle.session, readUpToSeq: handle.readUpToSeq }),
         );
-      } catch {
-        // Lost the lease: the result never lands, which is the point.
+      } catch (error) {
+        // The cursor write did not land. A silent loss here would re-send
+        // this turn's inbox on the next wake, so the log and the turn row
+        // both carry it.
+        passError = errorText(error);
+        console.error(
+          `room ${handle.roomId.conversationId}: pass lost for @${handle.agentId}: ${passError}`,
+        );
       }
     }
     // The runtime ends a turn it had to cancel with no stop reason at all
     // (the watchdog, a lost process); a resolved prompt that still reported an
     // error is a failure. The two share `stopReason: null` in `TurnResult`,
-    // so the first split below reads as timeout.
+    // so the first split below reads as timeout — and a pass that lost its
+    // cursor write fails the row, however cleanly the prompt itself ended.
+    const error = [result.error, passError].filter(Boolean).join('; ') || undefined;
     const outcome = handle.spoke
       ? 'posted'
       : result.stopReason === null
         ? 'timeout'
-        : result.error
+        : error
           ? 'failed'
           : 'passed';
     this.options.turnLog.append({
@@ -337,7 +347,7 @@ export class RoomService {
       ...(handle.postedSeq === undefined ? {} : { postedSeq: handle.postedSeq }),
       ...(result.stopReason === null ? {} : { stopReason: result.stopReason }),
       heldCount: handle.heldCount,
-      ...(result.error ? { error: result.error } : {}),
+      ...(error ? { error } : {}),
     });
     if (turn.hosted) await turn.hosted.close().catch(() => undefined);
     this.toolCallSeen.delete(handle.agentId);
@@ -761,6 +771,10 @@ function lastTurnFor(turns: RoomTurnView[], agentId: RoomLabAgentId): RoomTurnVi
     if (turn.agentId === agentId && turn.outcome) return turn;
   }
   return undefined;
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** Two rounds of the same seq in two rooms are two rounds; the key says whose. */
