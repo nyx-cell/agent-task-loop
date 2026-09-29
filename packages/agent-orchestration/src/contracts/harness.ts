@@ -51,7 +51,8 @@ export interface TurnResult {
 
 /**
  * One tool the endpoint contributes. The control plane's ToolServer hosts the
- * definitions as one MCP endpoint per running turn.
+ * definitions as one MCP endpoint per session (ACP carries `mcpServers` only
+ * on `session/new`); each turn re-serves its definitions on it.
  */
 export interface ToolDefinition {
   name: string;

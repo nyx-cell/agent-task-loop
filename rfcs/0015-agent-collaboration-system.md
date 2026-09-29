@@ -587,6 +587,18 @@ One post per turn. Everything else a member can do (files, shell, a document
 service) is its own tooling, configured on its command, not by the Room. This
 is how a member writes a document directly and posts the link: principle 4.
 
+Implementation note, 2026-09-29: ACP carries `mcpServers` only on
+`session/new` — `session/prompt` has no field for them — so an endpoint
+hosted per turn left the session pointing at a closed URL from its second
+turn on. As built, the ToolServer hosts the endpoint once per (room, agent)
+session, at the first `session/new`, and keeps it listening for the session's
+life; each later activation re-serves its tools on the same endpoint instead
+of opening a new one, and the token in the URL is stable for the session. The
+security property is per call, not per URL: the ToolServer answers a call
+only while the endpoint-side registration says the member has an activation
+running, so the tools stop working when the turn ends, and the runtime
+releases the hosted endpoint when it discards the session.
+
 ### Private rooms
 
 Two members that want to work something out without waking everyone else do

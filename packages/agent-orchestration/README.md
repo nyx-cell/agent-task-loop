@@ -22,8 +22,10 @@ profiles, and the stores in `infrastructure/`.
   lease store, and the Node clock/identity/liveness/scheduler adapters.
 - `./acp` — the ACP-bound pieces: `AcpConnector` (with `probe`), the
   `claude` / `codex` / `opencode` profiles, and the `ToolServer` that hosts
-  tool definitions as one streamable-HTTP MCP endpoint per turn (with a stdio
-  shim, `bin/acp-tool-shim.js`, for adapters without `mcpCapabilities.http`).
+  tool definitions as one streamable-HTTP MCP endpoint per session — ACP
+  carries `mcpServers` only on `session/new` — with each turn re-served on it
+  and every call gated on the turn's registration (plus a stdio shim,
+  `bin/acp-tool-shim.js`, for adapters without `mcpCapabilities.http`).
 
 The split keeps consumers that only borrow the lease (the Task package) from
 pulling the ACP and MCP SDKs into their bundles.
@@ -57,4 +59,6 @@ await runtime.cancel(key);
 One activation at a time per key. An activation acquires the lease, connects
 or reuses the process, reuses or creates the session, asks `onActivate` for
 the Harness, applies the profile, prompts, runs the `afterTurn` hook, and
-releases.
+releases. A failed activation discards the session and hands the key to
+`onSessionDiscard` — the endpoint releases what it hosted for the session
+(its tools endpoint among it) — before a pending activation starts fresh.

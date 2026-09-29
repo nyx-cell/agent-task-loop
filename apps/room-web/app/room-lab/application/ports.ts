@@ -61,14 +61,24 @@ export interface TurnLog {
 }
 
 /**
- * The control plane's ToolServer, narrowed to what a turn needs: the Room
- * tool definitions hosted behind a random per-turn token.
+ * The control plane's ToolServer, narrowed to what an activation needs: the
+ * member's Room tool definitions made reachable on the endpoint its session
+ * carries. The session's first activation hosts the endpoint; later ones
+ * re-serve their tools on the same one, so the URL the agent's `session/new`
+ * holds stays valid for the session's life.
  */
-export type RoomToolHost = (input: {
+export interface RoomToolHostInput {
   agentId: RoomLabAgentId;
+  /** This activation's Room tools; they replace whatever the endpoint serves. */
   tools: ToolDefinition[];
-  token: string;
-}) => Promise<HostedTools>;
+  /**
+   * The endpoint-side registration, consulted per call: true while this
+   * activation is the member's open turn. A call without it is refused.
+   */
+  authorize: () => boolean;
+}
+
+export type RoomToolHost = (input: RoomToolHostInput) => Promise<HostedTools>;
 
 /** What the dispatcher needs about the room's members: who is seated, in order. */
 export type RoomMembers = () => readonly RoomLabAgentId[];

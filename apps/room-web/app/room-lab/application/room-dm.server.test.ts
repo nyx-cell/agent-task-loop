@@ -114,7 +114,12 @@ function buildLinked(options: BuildOptions = {}): Built {
       workRoot: () => mkdtempSync(join(tmpdir(), 'rivus-room-dm-')),
       toolHost: async ({ tools }) => {
         runtime.tools.push(tools);
-        return { endpoint: {} as unknown as McpServer, url: 'http://127.0.0.1:0/mcp', close: async () => {} };
+        return {
+          endpoint: {} as unknown as McpServer,
+          url: 'http://127.0.0.1:0/mcp',
+          serveTurn: () => undefined,
+          close: async () => {},
+        };
       },
       dm,
       ...(roomId === PARENT ? {} : { parentTitle: () => catalog.get(PARENT).title }),

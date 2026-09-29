@@ -90,7 +90,14 @@ function build(options: BuildOptions = {}): Built {
   const toolHost: RoomToolHost = async ({ agentId, tools: definitions }) => {
     tools.push(definitions);
     toolsByAgent.set(agentId, definitions);
-    return { endpoint: {} as unknown as McpServer, url: 'http://127.0.0.1:0/mcp', close: async () => {} };
+    // The real endpoint outlives the turn; these tests call the tool
+    // definitions directly, so re-serving is a no-op here.
+    return {
+      endpoint: {} as unknown as McpServer,
+      url: 'http://127.0.0.1:0/mcp',
+      serveTurn: () => undefined,
+      close: async () => {},
+    };
   };
   const prompts = options.prompts ?? {};
   const registry: AgentRegistry = {

@@ -25,4 +25,4 @@ export {
 } from './infrastructure/profiles';
 
 export { ToolServer } from './application/tool-server';
-export type { HostToolsInput, HostedTools, ToolServerOptions } from './application/tool-server';
+export type { HostToolsInput, HostedTools, ToolServerOptions, TurnTools } from './application/tool-server';

@@ -74,7 +74,6 @@ interface RoundBudgetState {
 
 interface OpenTurn {
   handle: RoomTurnHandle;
-  hosted?: HostedTools;
 }
 
 export interface RoomServiceOptions {
@@ -217,6 +216,7 @@ export class RoomService {
     const wakeKey = runtimeKey(roomId.conversationId, agentId);
     const lease = this.options.lease;
 
+    let hosted: HostedTools | undefined;
     if (this.options.toolHost) {
       const isOpen = () => this.openTurns.get(agentId) === turn;
       const tools: ToolDefinition[] = [
@@ -262,7 +262,13 @@ export class RoomService {
           },
         }));
       }
-      turn.hosted = await this.options.toolHost({ agentId, tools, token: randomUUID() });
+      // Tools live with the member's session: the first activation hosts the
+      // endpoint and its `session/new` carries it; every later activation
+      // re-serves its tools on the same endpoint, because ACP carries
+      // `mcpServers` only on `session/new`. The gate keeps the per-turn
+      // authorization: a call passes only while this activation is the
+      // member's open turn.
+      hosted = await this.options.toolHost({ agentId, tools, authorize: isOpen });
     }
 
     this.openTurns.set(agentId, turn);
@@ -280,7 +286,7 @@ export class RoomService {
         trigger,
         ...(this.options.parentTitle ? { parent: this.options.parentTitle() } : {}),
       }),
-      tools: turn.hosted ? [turn.hosted.endpoint] : [],
+      tools: hosted ? [hosted.endpoint] : [],
       permissions: cwdPermissionPolicy(cwd),
       hooks: {
         onUpdate: update => this.onUpdate(agentId, update),
@@ -349,7 +355,10 @@ export class RoomService {
       heldCount: handle.heldCount,
       ...(error ? { error } : {}),
     });
-    if (turn.hosted) await turn.hosted.close().catch(() => undefined);
+    // The hosted endpoint stays up: it belongs to the member's session, whose
+    // next turn re-serves its tools on it. The gate closed above — the turn
+    // left `openTurns` — so calls are refused from here on (RFC 0015: a
+    // turn's tools stop working when the turn ends).
     this.toolCallSeen.delete(handle.agentId);
     this.touch();
 

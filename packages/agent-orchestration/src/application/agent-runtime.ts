@@ -65,8 +65,10 @@ interface InboxRecord extends Inbox {
  * The actor-model scheduler between the endpoint and the agents (RFC 0015):
  * `wake` never blocks the caller, an activation acquires the lease, reuses or
  * starts the process and the session, asks `onActivate` for the Harness,
- * applies the profile, hosts the tools, prompts, runs `afterTurn` and
- * releases. A timeout cancels the session and ends the activation as timeout.
+ * applies the profile, prompts, runs `afterTurn` and releases. A timeout
+ * cancels the session and ends the activation as timeout; a failed activation
+ * discards the session and releases what the endpoint registered for it
+ * (`onSessionDiscard`), before any pending activation may start fresh.
  */
 export class AgentRuntime {
   private readonly connector: AgentConnector;
@@ -79,6 +81,7 @@ export class AgentRuntime {
   private readonly defaultTimeoutMs: number;
   private readonly inboxes = new Map<string, InboxRecord>();
   private activateHandler: ActivateHandler | undefined;
+  private sessionDiscardHandler: ((key: string) => void | Promise<void>) | undefined;
 
   constructor(options: AgentRuntimeOptions) {
     this.connector = options.connector;
@@ -94,6 +97,16 @@ export class AgentRuntime {
   /** The endpoint builds the input; called once per activation. */
   onActivate(handler: ActivateHandler): void {
     this.activateHandler = handler;
+  }
+
+  /**
+   * What to tear down with a session — the tools the endpoint hosted for it
+   * among them. The runtime calls this once per key on the failure path that
+   * clears `inbox.session`, and waits for it, so the next activation starts
+   * against a released endpoint rather than a stale one.
+   */
+  onSessionDiscard(handler: (key: string) => void | Promise<void>): void {
+    this.sessionDiscardHandler = handler;
   }
 
   /** Coalesces; never blocks the caller. */
@@ -210,9 +223,16 @@ export class AgentRuntime {
       }
       if (connection) {
         // The process or session is of unknown health after a failure; the
-        // next activation starts fresh.
+        // next activation starts fresh — and what the endpoint hosted for
+        // the session goes with it, released before that next activation
+        // can host its own.
         inbox.connection = undefined;
         inbox.session = undefined;
+        try {
+          await this.sessionDiscardHandler?.(key);
+        } catch (discardError) {
+          inbox.lastError ??= errorText(discardError);
+        }
       }
     } finally {
       if (timeoutHandle) this.scheduler.clearInterval(timeoutHandle);

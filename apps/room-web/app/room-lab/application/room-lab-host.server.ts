@@ -9,8 +9,9 @@ import {
   type AgentBinding,
   type AgentProbe,
   type Harness,
+  type ToolDefinition,
 } from '@rivus/agent-orchestration';
-import { AcpConnector, ToolServer } from '@rivus/agent-orchestration/acp';
+import { AcpConnector, ToolServer, type HostedTools } from '@rivus/agent-orchestration/acp';
 import { RoomService, RoomInputError } from './room-service.server';
 import { RoomDm } from './room-dm.server';
 import type { TurnLog } from './ports';
@@ -50,6 +51,12 @@ export class RoomLabHost {
   private readonly services = new Map<string, RoomService>();
   private catalog: RoomCatalog;
   private inventoryCache?: RoomAgentProbeItem[];
+  /**
+   * The tools endpoint each (room, member) session carries, by runtime key.
+   * Hosted at the session's first activation, re-served on every later one,
+   * released when the runtime discards the session.
+   */
+  private readonly sessionTools = new Map<string, HostedTools>();
 
   /** The one roster the desk, the routes and the views read members from. */
   readonly agents: AgentRegistry;
@@ -100,6 +107,7 @@ export class RoomLabHost {
       now: nowIso,
     });
     this.runtime.onActivate(key => this.activateKey(key));
+    this.runtime.onSessionDiscard(key => this.discardKey(key));
   }
 
   /** The runtime's activate handler: one key, one room's member. */
@@ -109,6 +117,46 @@ export class RoomLabHost {
     const roomId = key.slice('room:'.length, at);
     const agentId = key.slice(at + marker.length);
     return this.open(roomId).activate(agentId);
+  }
+
+  /**
+   * The runtime's session-discard handler: the member's session is gone, so
+   * the tools endpoint it carried is released — no port outlives its session.
+   */
+  private async discardKey(key: string): Promise<void> {
+    const hosted = this.sessionTools.get(key);
+    if (!hosted) return;
+    this.sessionTools.delete(key);
+    await hosted.close().catch(() => undefined);
+  }
+
+  /**
+   * The Room tools endpoint of one member's session: hosted at the session's
+   * first activation — its `session/new` is what carries the endpoint — and
+   * re-served on every later activation, because ACP carries `mcpServers`
+   * only on `session/new`. The per-call gate keeps the turn-scoped
+   * authorization: a call passes only while the member has an open turn.
+   */
+  private async hostSessionTools(
+    roomId: string,
+    agentId: RoomLabAgentId,
+    tools: ToolDefinition[],
+    authorize: () => boolean,
+  ): Promise<HostedTools> {
+    const key = runtimeKey(roomId, agentId);
+    const existing = this.sessionTools.get(key);
+    if (existing) {
+      existing.serveTurn({ tools, authorize });
+      return existing;
+    }
+    const hosted = await this.toolServer.hostTools({
+      tools,
+      authorize,
+      token: randomUUID(),
+      transport: this.toolTransport(agentId),
+    });
+    this.sessionTools.set(key, hosted);
+    return hosted;
   }
 
   /** Re-reads the `agents` table; the next probe re-runs against the new rows. */
@@ -284,8 +332,8 @@ export class RoomLabHost {
       },
       roomTitle: () => this.catalog.get(roomId).title,
       workRoot: defaultWorkRoot,
-      toolHost: ({ agentId, tools, token }) =>
-        this.toolServer.hostTools({ tools, token, transport: this.toolTransport(agentId) }),
+      toolHost: ({ agentId, tools, authorize }) =>
+        this.hostSessionTools(roomId, agentId, tools, authorize),
       dm: this.dm,
       parentTitle: this.parentTitleOf(roomId),
       ledgerOf: ancestor => this.open(ancestor),
