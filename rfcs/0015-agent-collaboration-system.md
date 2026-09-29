@@ -1016,3 +1016,74 @@ members' first activations (each `wake_depth 1`, both triggered by the
 admit), so this run never climbed to depth 2; the depth ladder is the
 service tests'. Token costs were not tapped this run. The serial default
 stands as decided above — one two-member round does not reopen it.
+
+## End-to-end acceptance, 2026-09-29
+
+Five walkthrough scenarios run against the branch's production build, driven
+through the endpoint's HTTP face (single-fetch `.data` routes): one round per
+scenario, no reruns, a scratch library under `RIVUS_ROOM_HOME`. Rooms are
+titled 「E2E 验收-…」. Every claim was cross-checked afterwards against the
+`rooms.sqlite` rows (read-only), the HTTP views, the server log, and the
+driver evidence files; the numbers below are the cross-checked ones.
+
+| Member | Adapter | Version | Took part |
+| --- | --- | --- | --- |
+| @claude | `claude-agent-acp` | 0.81.0 | every scenario |
+| @codex | `codex-acp` | 1.13.0 | every scenario |
+| @opencode | `opencode acp` | 1.18.30 | probed `ready`, then every prompt died with `Internal error: 余额不足或无可用资源包,请充值。` (backend out of credit — the S5 gap, unchanged). `timeout` in both rooms that seated it |
+
+`@agentclientprotocol/sdk` 1.5.0; `dsh` is not a candidate row (three seeds).
+Every room below ran `broadcast`, `serial` off.
+
+| Scenario | Room | Result |
+| --- | --- | --- |
+| A question, two answers (2 seats) | `r_0ea9547968` | Reproduced. head 3, 4 turns, one round. Both first turns started the same millisecond on trigger 1; codex posted seq 2, claude read it inside its turn (`read_up_to_seq 2`) and posted seq 3; both follow-ups passed on trigger 3 — the member-post wake chain, live, including one pending wake released 2 ms after its turn ended. Wall ≈ 2 min. HELD never fired (the second speaker had already read): `held_count 0` everywhere, recorded as not observed |
+| Count-off (2 seats) | `r_d52d0f5f4e` | Reproduced with one deviation. head 3, 4 turns (2 posts, 2 passes), one round, HELD 1 (codex, resolved in-turn); both members reported their seat numbers. Deviation: the posts' depths are 1 and 1, not 1 and 2 — codex's wake collapsed into its running activation (the Inbox rule), so its trigger stayed the human seq and `speak` posted at trigger depth + 1. The service test's `0,1,2,3` ladder assumes a runtime that opens an activation per wake; the real runtime collapses |
+| A handoff | `r_303c26dd2f` | First half only. seq 2 (@claude → @codex, depth 1) woke codex 1 ms later (dispatch-on-post); codex created `hello.txt` ("from codex\n", 11 bytes) in the room cwd and ended `passed` without calling `room_speak`. head 2, 3 turns, one round. The report post and the review (walkthrough seq 7/8) never happened — member behavior, not room mechanism; not re-run |
+| A long piece of work | `r_e3bf168253` | Reproduced. One member. Exactly 2 events: the request and a post whose body is the file path only; `design-note.md` in the room cwd holds a title and exactly three numbered sentences; one turn, 66 s. Principle 4 end to end |
+| A private exchange | `r_51b1d5bbe7` + child `r_4ce0f8837a` | First leg only. @claude called `room_dm` mid-turn; the child opened under the parent (`opened_by claude`, `opened_at_seq 1`), members exactly claude + codex, title `claude ↔ codex`; child depths 1/2/3, first message id `dm:r_51b1d5bbe7:1:1:1`; claude's parent turn still ended `passed` (dm is not speak). @opencode was woken once — parent trigger 1 — and timed out on credit. The child is fully human-readable over HTTP and nests in the sidebar under the parent. The parent conclusion post (walkthrough seq 10) never appeared across a 900 s silent window; see finding 2 |
+
+### What the cross-check found
+
+1. **A `pass` can lose its cursor write.** `afterTurn` is registered
+   fire-and-forget (`void this.afterTurn(...)`, room-service.server.ts:288)
+   and the runtime releases the lease in its own `finally`
+   (agent-runtime.ts:219; `LeaseManager.release` calls `tryRelease` directly,
+   lease-manager.ts:73). The pass runs fenced
+   (sqlite-lease-store.server.ts:79-86); when the release deletes the lease
+   row before the fence's re-read, the fence returns `executed: false`,
+   `LeaseManager` throws `OrchestrationConflictError` (lease-manager.ts:97),
+   and room-service's empty catch swallows it (room-service.server.ts:312) —
+   the turn row stands, the cursor does not move. In the data: @codex's last
+   pass in `r_0ea9547968` claims `read_up_to_seq 3` while
+   `agent_sessions.seen_seq` stays 2; @codex in `r_303c26dd2f` lost both
+   passes (seen 0); all three members of `r_51b1d5bbe7` sit at seen 0; the
+   smoke room's post-wave passes are lost the same way. A pass that lands
+   (@claude's, same room) shows the race, not a rule. Consequence: on restart
+   or the next activation the member is re-sent events it already passed.
+2. **The private exchange has no path back to the parent.** Walkthrough seq 10
+   needs a member to post the conclusion in the parent room after the child
+   closes, but a child's events wake only the child's members, `pass` wakes
+   nobody, and the parent record gains no event — so no wake can start the
+   parent-room turn that would carry the conclusion. The person can post
+   again; otherwise "one of them posts the conclusion in the parent room" has
+   no mechanism behind it as built.
+3. **Driver leftovers.** Six rooms without the 「E2E 验收-」 prefix sit in the
+   acceptance library, all empty (no events, no turns): one from the
+   precheck's 405 probe (`probe-405c`) and five titled "broadcast" from
+   `create` argument misfires, one of which the handoff report declares. They
+   await cleanup together with the prefixed rooms.
+
+The server log holds only 200/302 and three 405s — the known `POST /room`
+without `?index` — nothing else.
+
+### Against the plan
+
+Slice 3's proof asked for three real members; only two had backend credit.
+One question and one count-off ran live and `turns` shows the outcomes.
+Slice 4 (measurement) is untouched by this acceptance, and typecheck, vitest
+and build were not re-run here. Both half-reproduced walkthroughs stop at
+member behavior the room cannot force — a member that works silently and
+never calls `room_speak`, and a conclusion with no wake path back to the
+parent. The mechanism under both is exactly the record's: dispatch-on-post,
+pass wakes nobody, a child wakes only its own members.
