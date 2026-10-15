@@ -1,5 +1,62 @@
 # @rivus/agent-task-loop
 
+## 0.12.0
+
+### Minor Changes
+
+- [#150](https://github.com/PerfectPan/agent-task-loop/pull/150) [`14d6ab7`](https://github.com/PerfectPan/agent-task-loop/commit/14d6ab788f46a7da9280d600082ad94cfce3ac73) Thanks [@nyx-cell](https://github.com/nyx-cell)! - Detect installed agents with `@rivus/agent-kit` 0.11.0 instead of the MoonBit scanner, and require Node.js 22.13 or newer (the kit's Node adapters).
+  
+  The kit supports 7 agents with built-in probe recipes: claude-code, codex, cursor, gemini-cli, grok, opencode, pi. `agent-finder-cli` keeps the other 20 catalog entries through its own probe recipes (`openhands`, `cline`, `codebuddy`, `command-code`, `kiro-cli`, `antigravity`, `roo-code`, `github-copilot`, `amp`, `openclaw`, `neovate`, `qoder`, `zencoder`, `kimi-code-cli`, `windsurf`, `vscode-copilot`, `codex-desktop`, `aider`, `hermes`, `trae`), so `scan`, `provider list`, `provider inspect` and `doctor` list 27 agents: the previous 26 plus the kit's `grok`.
+  
+  Differences accepted in the parity comparison, for the same probe inputs:
+  
+  - Report order changes: the kit's built-in agents come first (opencode, claude-code, codex, cursor, pi, gemini-cli, grok), then the legacy recipes; the MoonBit scanner used catalog file order.
+  - The conservative "provider metadata" warnings on opencode and pi no longer appear; the kit's recipes for them carry no warnings, while the 20 legacy recipes keep theirs verbatim.
+  - Cursor: `~/.cursor` is now checked as a configuration path, `cursor-agent` as a command name, and the recipe adds two caveats about not following `CURSOR_CONFIG_DIR`/`XDG_CONFIG_HOME` and not probing the command name `agent`.
+  - opencode also checks `~/.config/opencode/opencode.jsonc` as an MCP configuration path.
+  - Each installation carries the new `auth` (file-based login state) and `problems` (checks that could not complete) fields; `agent-finder scan --json` prints that installation array instead of the old `schema_version: "0.1"` report.
+  - `agent-task-loop init` detects claude-code and codex with `versionProbe: false`, so it never executes an agent command; an agent is configured when its command is found on `PATH`, where discovery previously also required a successful `--version` run.
+
+- [#151](https://github.com/PerfectPan/agent-task-loop/pull/151) [`60fb524`](https://github.com/PerfectPan/agent-task-loop/commit/60fb524d8f5f86f841375ed03a5f012889a2302e) Thanks [@nyx-cell](https://github.com/nyx-cell)! - Discover sessions and read transcripts with `@rivus/agent-kit` 0.11.0 (`/sessions` + `/transcript`) instead of the deleted internal `@rivus/agent-sessions` package. Resume command strings stay application-side: `packages/agent-finder-cli/src/sessions/resume.ts` and `packages/agent-task-loop/src/session/resume.ts` are the single sources (`codex resume <id>`, `claude --resume <id>`).
+  
+  Differences accepted in the parity comparison against the old package, for the same on-disk fixtures:
+  
+  - The session list covers more sessions: Codex `archived_sessions/` is scanned, `CODEX_HOME` and `CLAUDE_CONFIG_DIR` are honored, and grok sessions are included. The old scanner only walked `~/.codex/sessions` and `~/.claude/projects`.
+  - Claude subagent transcripts (`<session>/subagents/agent-*.jsonl`) are no longer listed as independent sessions; their turns appear inside the parent session's transcript instead.
+  - `agent-finder sessions list --json` prints kit session heads (`ref`, `lastActiveAt` epoch ms, `sizeBytes`, `firstPrompt`, …) instead of the old `Session` shape, and `--agent claude` is accepted as an alias of `claude-code`. `sessions inspect --json` prints the transcript as kit transcript events.
+  - Timestamps: `updatedAt` (file mtime, ISO) becomes `lastActiveAt` (the last record time read from the file's head and tail, epoch ms).
+  - A Codex rollout records each turn twice (the CLI's `event_msg` copy and the model's `response_item` copy). The preview renders each turn once, attributed to the `response_item`; the old parser rendered both copies. A regression test pins the single count.
+  - The task-loop TUI preview and the sessions browser read transcript events (`user`/`assistant`/`reasoning`/`tool_call`); tool calls render as `⚙ tool` regardless of which agent emitted them.
+
+- [#130](https://github.com/PerfectPan/agent-task-loop/pull/130) [`68a1d1c`](https://github.com/PerfectPan/agent-task-loop/commit/68a1d1ce35b688a6b9a16fb16a77d2399925b69a) Thanks [@PerfectPan](https://github.com/PerfectPan)! - Upgrade the runtime dependencies to Zod 4, Ink 6 with React 19, and citty 0.2. User-visible changes:
+  
+  - A value after a boolean flag is rejected: `cleanup --force false` used to turn `--force` off, but citty 0.2 never reads a value for a boolean flag and would turn it on. Turn a flag off with `--no-force` or `--force=false`. Every command also rejects other positional arguments it does not take.
+  - `--max-rounds` on `start` and `reject` now takes effect; it used to be ignored in favour of the default of 5 unless written `--maxRounds`.
+  - `-v` prints the version, and `--help` output uses citty 0.2's layout.
+  - A failing command prints only its error message instead of the whole error object.
+  - Validation errors from `create`, `source add` and config loading use Zod 4's wording, for example `Invalid --priority: Too big: expected number to be <=9`.
+
+- [#152](https://github.com/PerfectPan/agent-task-loop/pull/152) [`a7be2e7`](https://github.com/PerfectPan/agent-task-loop/commit/a7be2e7bbd1edceadccffbbd8a38bf484aa34fb6) Thanks [@nyx-cell](https://github.com/nyx-cell)! - Occupy Tasks with `@rivus/agent-kit-collab` 0.11.0's `/lease` (`createLeaseManager` + a scoped `manager.acquire`) instead of `@rivus/agent-orchestration`'s `LeaseManager` and `FileLeaseStore`. `effect@4.0.1` is an exact dependency. The old orchestration facade (`src/orchestration/orchestration.ts`, `node-factory.ts`, `task-orchestration.ts`) is deleted; the run baton (`Run`, the `classic-delivery` template, the run-state stores, the seat policy) stays application-side and the seat lifecycle is wired to the kit lease handle. The occupancy key stays `task:<taskId>`.
+  
+  Differences accepted in the old/new comparison, recorded in the lease tests:
+  
+  - The lease heartbeat is the kit's managed fiber (15 s renewals, 120 s TTL, each renewal a compare-and-swap); the old per-mutation lease CAS and per-spawn heartbeat timer are gone, and run-state writes check the observed loss instead.
+  - The lease record is the kit's schema (`<key>.lease.json` with a schema version and a tombstone on release). Old `lease.lock` files are not migrated; an existing holder keeps running and a later run re-acquires, which continues the fencing generation.
+  - A lease lost mid-run now surfaces as `TaskLeaseLostError` (taken over, released, missing or expired) instead of the old `OrchestrationConflictError` from the heartbeat; a refused fenced write still reports the orchestration conflict. A second start of the same Task keeps the old message: `Task <id> already has an active orchestration (pid <pid>)`.
+  - An unreadable or newer-schema lease record is refused without being overwritten (repository failure) where the old store treated it as absent and conflicted.
+
+- [#134](https://github.com/PerfectPan/agent-task-loop/pull/134) [`778fe6f`](https://github.com/PerfectPan/agent-task-loop/commit/778fe6facbf4d7ddee26536c6f846f99d7b5b10c) Thanks [@PerfectPan](https://github.com/PerfectPan)! - Require Node.js 22 or newer; Node.js 20 is no longer supported. The CLIs move to Ink 7, and `@rivus/agent-task-loop` also to execa 10; both need Node.js 22.
+
+- [#142](https://github.com/PerfectPan/agent-task-loop/pull/142) [`f5a6a3e`](https://github.com/PerfectPan/agent-task-loop/commit/f5a6a3e861568a4bdf4a72688f59d65e846a2bef) Thanks [@PerfectPan](https://github.com/PerfectPan)! - Support the Rivus 0.17 plugin SDK with the optional `@rivus/agent` peer range `>=0.17.0 <0.18.0`. Plugin projects must upgrade Core to the supported minor; CLI-only installations still do not require Rivus Core.
+
+### Patch Changes
+
+- [#134](https://github.com/PerfectPan/agent-task-loop/pull/134) [`778fe6f`](https://github.com/PerfectPan/agent-task-loop/commit/778fe6facbf4d7ddee26536c6f846f99d7b5b10c) Thanks [@PerfectPan](https://github.com/PerfectPan)! - A failing command also prints the message of each error that caused it, the unexpected-argument error mentions boolean flags only when the stray value is `true` or `false`, and the `./rivus-plugin` tools report a field missing from their input as `is required`, for example `Invalid task-create title: is required`, instead of `has an invalid type`.
+
+- [#149](https://github.com/PerfectPan/agent-task-loop/pull/149) [`5cd6419`](https://github.com/PerfectPan/agent-task-loop/commit/5cd6419fc230f4058c84606b90be8ba4dd7a87fe) Thanks [@nyx-cell](https://github.com/nyx-cell)! - Build the published JavaScript with Vite+ (`vp pack`). The published file set changes from fixed chunks to hashed chunks plus a separate `task-provider` declaration file; imports and exports are unchanged.
+
+- [#138](https://github.com/PerfectPan/agent-task-loop/pull/138) [`f34f632`](https://github.com/PerfectPan/agent-task-loop/commit/f34f63230f8dacad29d6b18365137c9eddea26c0) Thanks [@PerfectPan](https://github.com/PerfectPan)! - Fix the published TUIs (`agent-task-loop tui` and `agent-finder sessions browse`) crashing on start with `ReferenceError: React is not defined`: the build now compiles JSX with the automatic runtime.
+
 ## 0.11.1
 
 ### Patch Changes
